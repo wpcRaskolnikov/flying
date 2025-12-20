@@ -1,3 +1,4 @@
+mod mdns;
 mod receive;
 mod send;
 mod utils;
@@ -8,7 +9,7 @@ use tokio::{
     net::{TcpListener, TcpStream},
 };
 
-const VERSION: u64 = 1;
+const VERSION: u64 = 2;
 
 #[tokio::main]
 async fn main() {
@@ -23,23 +24,18 @@ async fn main() {
 
     match mode.as_str() {
         "send" => {
-            if args.len() < 4 {
-                println!("Usage: flying send <file> <receiver_ip>");
+            if args.len() < 3 {
+                println!("Usage: flying send <file>");
                 return;
             }
             let file_path = PathBuf::from(&args[2]);
-            let receiver_ip = &args[3];
 
             if !file_path.exists() {
                 println!("Error: File does not exist: {:?}", file_path);
                 return;
             }
 
-            let password = if args.len() > 4 {
-                args[4].clone()
-            } else {
-                utils::generate_password()
-            };
+            let password = utils::generate_password();
 
             println!("===========================================");
             println!("Flying - File Transfer Tool");
@@ -48,29 +44,50 @@ async fn main() {
             println!("Password: {}", password);
             println!("===========================================\n");
 
-            if let Err(e) = run_sender(&file_path, receiver_ip, &password).await {
+            if let Err(e) = run_sender(&file_path, &password).await {
                 eprintln!("Error: {}", e);
             }
         }
         "receive" => {
-            if args.len() < 2 {
-                println!("Usage: flying receive [password] [output_dir]");
-                return;
+            // Parse options
+            let mut i = 2;
+            let mut sender_ip: Option<String> = None;
+            let mut output_dir = env::current_dir().unwrap();
+            let mut password: Option<String> = None;
+
+            while i < args.len() {
+                match args[i].as_str() {
+                    "-o" => {
+                        if i + 1 < args.len() {
+                            output_dir = PathBuf::from(&args[i + 1]);
+                            i += 2;
+                        } else {
+                            println!("Error: -o requires an argument");
+                            return;
+                        }
+                    }
+                    arg => {
+                        if password.is_none() {
+                            password = Some(arg.to_string());
+                            i += 1;
+                        } else if sender_ip.is_none() {
+                            sender_ip = Some(arg.to_string());
+                            i += 1;
+                        } else {
+                            i += 1;
+                        }
+                    }
+                }
             }
 
-            let password = if args.len() > 2 {
-                args[2].clone()
-            } else {
-                println!("Please enter password:");
-                let mut input = String::new();
-                std::io::stdin().read_line(&mut input).unwrap();
-                input.trim().to_string()
-            };
-
-            let output_dir = if args.len() > 3 {
-                PathBuf::from(&args[3])
-            } else {
-                env::current_dir().unwrap()
+            let password = match password {
+                Some(p) => p,
+                None => {
+                    println!("Please enter password:");
+                    let mut input = String::new();
+                    std::io::stdin().read_line(&mut input).unwrap();
+                    input.trim().to_string()
+                }
             };
 
             if !output_dir.exists() {
@@ -86,7 +103,7 @@ async fn main() {
             println!("Output directory: {:?}", output_dir);
             println!("===========================================\n");
 
-            if let Err(e) = run_receiver(&output_dir, &password).await {
+            if let Err(e) = run_receiver(&output_dir, &password, sender_ip).await {
                 eprintln!("Error: {}", e);
             }
         }
@@ -94,21 +111,24 @@ async fn main() {
     }
 }
 
-async fn run_sender(
-    file_path: &PathBuf,
-    receiver_ip: &str,
-    password: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_sender(file_path: &PathBuf, password: &str) -> Result<(), Box<dyn std::error::Error>> {
     let key = utils::get_key_from_password(password);
 
-    let addr = format!("{}:3290", receiver_ip).parse::<SocketAddr>()?;
-    println!("Connecting to receiver at {}...", addr);
-    let mut stream = TcpStream::connect(addr).await?;
-    println!("Connected!\n");
+    let addr = "0.0.0.0:3290".parse::<SocketAddr>()?;
+
+    // Start mDNS service advertisement
+    let _mdns = mdns::advertise_service(3290)?;
+
+    let listener = TcpListener::bind(&addr).await?;
+    println!("Listening on {}...", addr);
+    println!("Waiting for receiver to connect...\n");
+
+    let (mut stream, socket_addr) = listener.accept().await?;
+    println!("Connection accepted from {}\n", socket_addr);
 
     // Version exchange
-    stream.write_u64(VERSION).await?;
     let peer_version = stream.read_u64().await?;
+    stream.write_u64(VERSION).await?;
 
     if peer_version != VERSION {
         println!(
@@ -118,10 +138,12 @@ async fn run_sender(
     }
 
     // Mode confirmation (1 = send, 0 = receive)
-    stream.write_u64(1).await?;
-    let mode_ok = stream.read_u64().await?;
-    if mode_ok != 1 {
-        return Err("Both ends selected the same mode".into());
+    let peer_mode = stream.read_u64().await?;
+    if peer_mode == 1 {
+        stream.write_u64(0).await?;
+        return Err("Both ends selected send mode".into());
+    } else {
+        stream.write_u64(1).await?;
     }
 
     // Send number of files (always 1 in this simple version)
@@ -141,20 +163,29 @@ async fn run_sender(
 async fn run_receiver(
     output_dir: &PathBuf,
     password: &str,
+    sender_ip: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let key = utils::get_key_from_password(password);
 
-    let addr = "0.0.0.0:3290".parse::<SocketAddr>()?;
-    let listener = TcpListener::bind(&addr).await?;
-    println!("Listening on {}...", addr);
-    println!("Waiting for connection...\n");
+    // Discover sender using mDNS or use provided IP
+    let sender_addr = if let Some(ip) = sender_ip {
+        format!("{}:3290", ip).parse::<SocketAddr>()?
+    } else {
+        let services = mdns::discover_services(5)?; // Scan for 5 seconds
+        if let Some(selected_service) = mdns::select_service(&services) {
+            format!("{}:3290", selected_service.ip).parse::<SocketAddr>()?
+        } else {
+            return Err("No sender found".into());
+        }
+    };
 
-    let (mut stream, socket_addr) = listener.accept().await?;
-    println!("Connection accepted from {}\n", socket_addr);
+    println!("Connecting to sender at {}...", sender_addr);
+    let mut stream = TcpStream::connect(sender_addr).await?;
+    println!("Connected!\n");
 
     // Version exchange
-    let peer_version = stream.read_u64().await?;
     stream.write_u64(VERSION).await?;
+    let peer_version = stream.read_u64().await?;
 
     if peer_version != VERSION {
         println!(
@@ -163,13 +194,11 @@ async fn run_receiver(
         );
     }
 
-    // Mode confirmation
-    let peer_mode = stream.read_u64().await?;
-    if peer_mode == 0 {
-        stream.write_u64(0).await?;
-        return Err("Both ends selected receive mode".into());
-    } else {
-        stream.write_u64(1).await?;
+    // Mode confirmation (1 = send, 0 = receive)
+    stream.write_u64(0).await?; // We are receiver
+    let mode_ok = stream.read_u64().await?;
+    if mode_ok != 1 {
+        return Err("Both ends selected the same mode".into());
     }
 
     // Receive number of files
@@ -198,14 +227,28 @@ fn print_usage() {
     println!("Flying - Simple File Transfer Tool\n");
     println!("Usage:");
     println!("  Send a file:");
-    println!("    flying send <file> <receiver_ip> [password]");
-    println!("    Example: flying send document.pdf 192.168.1.100 mypass123\n");
+    println!("    flying send <file>");
+    println!("    Example: flying send document.pdf\n");
     println!("  Receive a file:");
-    println!("    flying receive [password] [output_dir]");
-    println!("    Example: flying receive mypass123 /tmp/downloads\n");
+    println!("    flying receive [password] [sender_ip] [-o output_directory]");
+    println!("    Example: flying receive blue-bird-secret");
+    println!("    Example: flying receive blue-bird-secret 192.168.1.100");
+    println!("    Example: flying receive blue-bird-secret -o /tmp/downloads");
+    println!("    Example: flying receive blue-bird-secret 192.168.1.100 -o /tmp/downloads\n");
+    println!("Send Mode Usage:");
+    println!("  Starts a TCP server and broadcasts mDNS service:");
+    println!("    flying send <file>");
+    println!("    - Waits for receiver to connect");
+    println!("    - Password is auto-generated using petname\n");
+    println!("Receive Mode Usage:");
+    println!("  Connects to sender using mDNS discovery or direct IP:");
+    println!("    flying receive [password] [sender_ip] [-o output_directory]");
+    println!("    - If sender_ip is not provided, mDNS auto-discovery will be used");
+    println!("    - If password is not provided, you'll be prompted");
+    println!("    - Use -o to specify output directory (default is current directory)\n");
     println!("Note:");
-    println!("  - If password is not provided for send mode, it will be auto-generated");
-    println!("  - If password is not provided for receive mode, you'll be prompted");
+    println!("  - Send mode generates passwords using petname (e.g. blue-bird-secret)");
+    println!("  - Receiver connects to sender using mDNS discovery or direct IP");
     println!("  - Default output directory is current directory");
     println!("  - Uses TCP port 3290");
     println!("  - Files are encrypted with AES-256-GCM");

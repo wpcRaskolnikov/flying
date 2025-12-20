@@ -1,4 +1,3 @@
-use rand::Rng;
 use sha2::{Digest, Sha256};
 use std::{fs, io, path::Path};
 
@@ -9,14 +8,7 @@ pub fn get_key_from_password(password: &str) -> [u8; 32] {
 }
 
 pub fn generate_password() -> String {
-    let mut rng = rand::rng();
-    let chars: Vec<char> = "23456789abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ"
-        .chars()
-        .collect();
-    const PASSWORD_LENGTH: usize = 8;
-    (0..PASSWORD_LENGTH)
-        .map(|_| chars[rng.random_range(0..chars.len())])
-        .collect()
+    petname::petname(3, "-").unwrap_or_else(|| "flying-transfer-secret".to_string())
 }
 
 pub fn hash_file(filename: &Path) -> io::Result<Vec<u8>> {
