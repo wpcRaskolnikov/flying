@@ -64,7 +64,10 @@ pub fn discover_services(
                             mdns_sd::ScopedIp::V6(scoped_v6) => {
                                 let addr = *scoped_v6.addr();
                                 // Skip link-local IPv6 addresses without proper scope
-                                if addr.is_loopback() || addr.is_unspecified() {
+                                if addr.is_loopback()
+                                    || addr.is_unspecified()
+                                    || addr.is_unicast_link_local()
+                                {
                                     continue;
                                 }
                                 IpAddr::V6(addr)
