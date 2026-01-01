@@ -240,7 +240,7 @@ dependencies = [
 
 [[package]]
 name = "flying"
-version = "3.2.0"
+version = "3.4.0"
 dependencies = [
  "aes-gcm",
  "clap",

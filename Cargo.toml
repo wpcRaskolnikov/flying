@@ -1,9 +1,17 @@
 [package]
 name = "flying"
-version = "3.2.0"
+version = "3.4.0"
 edition = "2024"
+authors = ["wpcRaskolnikov <22pcwang@stu.edu.cn>"]
+description = "A simple, secure, and fast file transfer tool"
 
 repository = "https://github.com/wpcRaskolnikov/flying.git"
+
+[package.metadata.wix]
+upgrade-guid = "6D0EA1A3-57AA-4A27-9E10-ABA76CAB0795"
+path-guid = "45D993CE-D3BF-4BD9-AFEC-7088078212E2"
+license = false
+eula = false
 
 [dependencies]
 aes-gcm = "0.10.3"
