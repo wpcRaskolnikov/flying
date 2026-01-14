@@ -2,8 +2,8 @@
 name = "flying"
 version = "4.1.0"
 edition = "2024"
-authors = ["wpcRaskolnikov <22pcwang@stu.edu.cn>"]
 description = "A simple, secure, and fast file transfer tool"
+authors = ["wpcRaskolnikov <22pcwang@stu.edu.cn>"]
 
 repository = "https://github.com/wpcRaskolnikov/flying.git"
 
