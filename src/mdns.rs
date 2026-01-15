@@ -17,12 +17,12 @@ pub fn advertise_service(port: u16) -> Result<ServiceDaemon, Box<dyn std::error:
     let instance_name = format!("{}-{}", hostname, SERVICE_NAME);
     let service_hostname = format!("{}.local.", hostname);
 
-    let properties = [("version", "2")];
+    let properties = [("version", "4")];
     let service_info = ServiceInfo::new(
         SERVICE_TYPE,
         &instance_name,
         &service_hostname,
-        "", // Will be replaced with actual IP addresses
+        "",
         port,
         &properties[..],
     )?
@@ -37,11 +37,31 @@ pub fn advertise_service(port: u16) -> Result<ServiceDaemon, Box<dyn std::error:
     Ok(mdns)
 }
 
+fn extract_ip(scoped_ip: &mdns_sd::ScopedIp) -> Option<IpAddr> {
+    match scoped_ip {
+        mdns_sd::ScopedIp::V4(scoped_v4) => Some(IpAddr::V4(*scoped_v4.addr())),
+        mdns_sd::ScopedIp::V6(v6) => Some(IpAddr::V6(*v6.addr())),
+        _ => None,
+    }
+}
+
+fn is_valid_ip(ip_addr: IpAddr) -> bool {
+    if ip_addr.is_loopback() || ip_addr.is_unspecified() {
+        return false;
+    }
+
+    let is_link_local = match ip_addr {
+        IpAddr::V4(v4) => v4.is_link_local(),
+        IpAddr::V6(v6) => v6.is_unicast_link_local(),
+    };
+
+    !is_link_local
+}
+
 pub fn discover_services(
     timeout_secs: u64,
 ) -> Result<Vec<DiscoveredService>, Box<dyn std::error::Error>> {
     let mdns = ServiceDaemon::new()?;
-
     let receiver = mdns.browse(SERVICE_TYPE)?;
 
     println!("Scanning for peers on the network...");
@@ -49,88 +69,38 @@ pub fn discover_services(
     let mut services = Vec::new();
     let start_time = std::time::Instant::now();
 
-    // Poll for events continuously during the timeout period
     while start_time.elapsed().as_secs() < timeout_secs {
         use mdns_sd::ServiceEvent;
 
-        while let Ok(event) = receiver.try_recv() {
-            match event {
-                ServiceEvent::ServiceResolved(info) => {
-                    for scoped_ip in info.get_addresses() {
-                        let ip_addr = match scoped_ip {
-                            mdns_sd::ScopedIp::V4(scoped_v4) => IpAddr::V4(*scoped_v4.addr()),
-                            mdns_sd::ScopedIp::V6(v6) => IpAddr::V6(*v6.addr()),
-                            _ => continue,
-                        };
-                        if ip_addr.is_loopback() || ip_addr.is_unspecified() {
-                            continue;
-                        }
-                        let is_link_local = match ip_addr {
-                            IpAddr::V4(v4) => v4.is_link_local(),
-                            IpAddr::V6(v6) => v6.is_unicast_link_local(),
-                        };
-                        if is_link_local {
-                            continue;
-                        }
+        match receiver.recv_timeout(Duration::from_millis(100)) {
+            Ok(ServiceEvent::ServiceResolved(info)) => {
+                for scoped_ip in info.get_addresses() {
+                    let Some(ip_addr) = extract_ip(&scoped_ip) else {
+                        continue;
+                    };
 
-                        // Check if we already have this service
-                        let already_exists = services.iter().any(|s: &DiscoveredService| {
-                            s.ip == ip_addr && s.port == info.get_port()
-                        });
-                        if !already_exists {
-                            services.push(DiscoveredService {
-                                hostname: info.get_hostname().to_string(),
-                                ip: ip_addr,
-                                port: info.get_port(),
-                            });
-                        }
+                    if !is_valid_ip(ip_addr) {
+                        continue;
                     }
-                }
-                _ => {}
-            }
-        }
 
-        // Sleep a bit before polling again
-        std::thread::sleep(Duration::from_millis(100));
+                    let already_exists = services
+                        .iter()
+                        .any(|s: &DiscoveredService| s.ip == ip_addr && s.port == info.get_port());
+                    if already_exists {
+                        continue;
+                    }
+
+                    services.push(DiscoveredService {
+                        hostname: info.get_hostname().to_string(),
+                        ip: ip_addr,
+                        port: info.get_port(),
+                    });
+                }
+            }
+            Ok(_) => {}
+            Err(_) => {}
+        }
     }
 
     Ok(services)
-}
-
-pub fn select_service(services: &[DiscoveredService]) -> Option<&DiscoveredService> {
-    if services.is_empty() {
-        println!("\nNo peers found on the network.");
-        println!("Make sure the peer is running and on the same network.");
-        return None;
-    }
-
-    println!("\nFound {} peer(s):", services.len());
-    for (i, service) in services.iter().enumerate() {
-        println!(
-            "  [{}] {} ({}:{})",
-            i + 1,
-            service.hostname,
-            service.ip,
-            service.port
-        );
-    }
-
-    if services.len() == 1 {
-        println!("\nAutomatically selecting the only available receiver.");
-        return Some(&services[0]);
-    }
-
-    println!("\nSelect a peer (1-{}):", services.len());
-
-    let mut input = String::new();
-    std::io::stdin().read_line(&mut input).ok()?;
-
-    let selection: usize = input.trim().parse().ok()?;
-
-    if selection > 0 && selection <= services.len() {
-        Some(&services[selection - 1])
-    } else {
-        println!("Invalid selection.");
-        None
-    }
 }

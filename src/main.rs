@@ -1,7 +1,5 @@
 use clap::{Parser, Subcommand};
-use flying::{
-    ConnectionMode, get_or_prompt_password, print_session_info, run_receiver, run_sender,
-};
+use flying::{ConnectionMode, run_receiver, run_sender, utils};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
@@ -38,6 +36,46 @@ enum Commands {
     },
 }
 
+fn print_session_info(
+    mode: &str,
+    password: &str,
+    connection_mode: &ConnectionMode,
+    output_dir: Option<&PathBuf>,
+) {
+    println!("===========================================");
+    println!("Flying - File Transfer Tool");
+    println!("===========================================");
+    println!("Mode: {}", mode);
+    println!("Password: {}", password);
+    if let Some(dir) = output_dir {
+        println!("Output directory: {:?}", dir);
+    }
+    match connection_mode {
+        ConnectionMode::AutoDiscover => {
+            println!("Connection: Auto-discovering peers on local network")
+        }
+        ConnectionMode::Listen => {
+            println!("Connection: Listening for incoming connections")
+        }
+        ConnectionMode::Connect(ip) => println!("Connection: Will connect to {}", ip),
+    }
+    println!("===========================================\n");
+}
+
+fn get_or_prompt_password(connection_mode: &ConnectionMode, password: Option<String>) -> String {
+    match connection_mode {
+        ConnectionMode::Listen => utils::generate_password(),
+        ConnectionMode::AutoDiscover | ConnectionMode::Connect(_) => {
+            password.unwrap_or_else(|| {
+                println!("Please enter password:");
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input).unwrap();
+                input.trim().to_string()
+            })
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
@@ -70,9 +108,7 @@ async fn main() {
             let password = get_or_prompt_password(&connection_mode, password);
             print_session_info("SEND", &password, &connection_mode, None);
 
-            if let Err(e) =
-                run_sender(&file, &password, connection_mode, recursive, persistent).await
-            {
+            if let Err(e) = run_sender(&file, &password, connection_mode, persistent).await {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }

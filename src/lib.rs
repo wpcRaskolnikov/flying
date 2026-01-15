@@ -32,74 +32,45 @@ impl ConnectionMode {
     }
 }
 
-pub fn get_or_prompt_password(
-    connection_mode: &ConnectionMode,
-    password: Option<String>,
-) -> String {
-    match connection_mode {
-        ConnectionMode::Listen => utils::generate_password(),
-        ConnectionMode::AutoDiscover | ConnectionMode::Connect(_) => {
-            password.unwrap_or_else(|| {
-                println!("Please enter password:");
-                let mut input = String::new();
-                std::io::stdin().read_line(&mut input).unwrap();
-                input.trim().to_string()
-            })
-        }
+fn select_service(services: &[mdns::DiscoveredService]) -> Option<&mdns::DiscoveredService> {
+    if services.is_empty() {
+        println!("\nNo peers found on the network.");
+        println!("Make sure the peer is running and on the same network.");
+        return None;
     }
-}
 
-pub fn print_session_info(
-    mode: &str,
-    password: &str,
-    connection_mode: &ConnectionMode,
-    output_dir: Option<&std::path::PathBuf>,
-) {
-    println!("===========================================");
-    println!("Flying - File Transfer Tool");
-    println!("===========================================");
-    println!("Mode: {}", mode);
-    println!("Password: {}", password);
-    if let Some(dir) = output_dir {
-        println!("Output directory: {:?}", dir);
-    }
-    match connection_mode {
-        ConnectionMode::AutoDiscover => {
-            println!("Connection: Auto-discovering peers on local network")
-        }
-        ConnectionMode::Listen => {
-            println!("Connection: Listening for incoming connections")
-        }
-        ConnectionMode::Connect(ip) => println!("Connection: Will connect to {}", ip),
-    }
-    println!("===========================================\n");
-}
-
-pub async fn version_handshake(
-    stream: &mut TcpStream,
-    send_first: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let (local_version, peer_version) = if send_first {
-        stream.write_u64(VERSION).await?;
-        let peer = stream.read_u64().await?;
-        (VERSION, peer)
-    } else {
-        let peer = stream.read_u64().await?;
-        stream.write_u64(VERSION).await?;
-        (VERSION, peer)
-    };
-
-    if peer_version != local_version {
+    println!("\nFound {} peer(s):", services.len());
+    for (i, service) in services.iter().enumerate() {
         println!(
-            "Warning: Version mismatch (local: {}, peer: {})",
-            local_version, peer_version
+            "  [{}] {} ({}:{})",
+            i + 1,
+            service.hostname,
+            service.ip,
+            service.port
         );
     }
 
-    Ok(())
+    if services.len() == 1 {
+        println!("\nAutomatically selecting the only available receiver.");
+        return Some(&services[0]);
+    }
+
+    println!("\nSelect a peer (1-{}):", services.len());
+
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input).ok()?;
+
+    let selection: usize = input.trim().parse().ok()?;
+
+    if selection > 0 && selection <= services.len() {
+        Some(&services[selection - 1])
+    } else {
+        println!("Invalid selection.");
+        None
+    }
 }
 
-pub async fn establish_connection(
+async fn establish_connection(
     mode: &ConnectionMode,
     port: u16,
 ) -> Result<TcpStream, Box<dyn std::error::Error>> {
@@ -107,9 +78,9 @@ pub async fn establish_connection(
         ConnectionMode::AutoDiscover => {
             println!("Searching for peers on the local network...\n");
 
-            let services = mdns::discover_services(5)?;
+            let services = mdns::discover_services(3)?;
 
-            if let Some(service) = mdns::select_service(&services) {
+            if let Some(service) = select_service(&services) {
                 let addr = SocketAddr::new(service.ip, service.port);
                 println!("\nConnecting to {}...", addr);
                 let stream = TcpStream::connect(addr).await?;
@@ -120,7 +91,7 @@ pub async fn establish_connection(
             }
         }
         ConnectionMode::Listen => {
-            // Create IPv6 socket with dual-stack support (works on Windows too)
+            // Create IPv6 socket with dual-stack support
             let addr = format!("[::]:{}", port).parse::<SocketAddr>()?;
 
             let socket = Socket::new(Domain::IPV6, Type::STREAM, Some(Protocol::TCP))?;
@@ -153,21 +124,105 @@ pub async fn establish_connection(
     }
 }
 
+pub async fn run_receiver(
+    output_dir: &std::path::PathBuf,
+    password: &str,
+    connection_mode: ConnectionMode,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let key = utils::get_key_from_password(password);
+
+    let mut stream = establish_connection(&connection_mode, 3290).await?;
+
+    utils::version_handshake(&mut stream, true, VERSION).await?;
+
+    // Mode confirmation (1 = send, 0 = receive)
+    stream.write_u64(0).await?;
+    let mode_ok = stream.read_u64().await?;
+    if mode_ok != 1 {
+        return Err("Both ends selected the same mode".into());
+    }
+
+    let num_files = stream.read_u64().await?;
+    println!("Receiving {} file(s)...\n", num_files);
+
+    // Receive folder info: 1 if sending a folder, 0 if single file
+    let is_folder = stream.read_u64().await? == 1;
+
+    // If receiving a folder, get the folder name and create it
+    let final_output_dir = if is_folder {
+        let folder_name_len = stream.read_u64().await? as usize;
+        let mut folder_name_bytes = vec![0; folder_name_len];
+        stream.read_exact(&mut folder_name_bytes).await?;
+        let folder_name = String::from_utf8_lossy(&folder_name_bytes).to_string();
+
+        let mut folder_path = output_dir.clone();
+        folder_path.push(&folder_name);
+        println!("Creating folder: {}\n", folder_name);
+
+        if !folder_path.exists() {
+            std::fs::create_dir_all(&folder_path)?;
+        }
+
+        folder_path
+    } else {
+        output_dir.clone()
+    };
+
+    // Only check duplicate for single file transfer
+    let check_duplicate = num_files == 1;
+
+    for i in 0..num_files {
+        println!("===========================================");
+        println!("File {} of {}", i + 1, num_files);
+        println!("===========================================");
+        receive::receive_file(&mut stream, &final_output_dir, &key, check_duplicate).await?;
+        println!();
+    }
+
+    println!("===========================================");
+    println!("Transfer complete!");
+    println!("===========================================");
+
+    stream.shutdown().await?;
+    Ok(())
+}
+
+fn collect_files_recursive(
+    dir: &std::path::Path,
+    files: &mut Vec<std::path::PathBuf>,
+) -> std::io::Result<()> {
+    if dir.is_file() {
+        files.push(dir.to_path_buf());
+        return Ok(());
+    }
+
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_files_recursive(&path, files)?;
+        } else {
+            files.push(path);
+        }
+    }
+    Ok(())
+}
+
 pub async fn run_sender(
     file_path: &std::path::PathBuf,
     password: &str,
     connection_mode: ConnectionMode,
-    _recursive: bool,
     persistent: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let key = utils::get_key_from_password(password);
 
     // Collect files to send (only once, outside the loop)
-    let files = if file_path.is_dir() {
-        utils::collect_files_recursive(file_path)?
+    let mut files = Vec::new();
+    if file_path.is_dir() {
+        collect_files_recursive(file_path, &mut files)?;
     } else {
-        vec![file_path.clone()]
-    };
+        files.push(file_path.clone());
+    }
 
     if files.is_empty() {
         return Err("No files to send".into());
@@ -362,7 +417,7 @@ async fn handle_single_transfer(
     file_path: &std::path::PathBuf,
     key: &[u8],
 ) -> Result<(), Box<dyn std::error::Error>> {
-    version_handshake(stream, false).await?;
+    utils::version_handshake(stream, false, VERSION).await?;
 
     // Mode confirmation (1 = send, 0 = receive)
     let peer_mode = stream.read_u64().await?;
@@ -391,14 +446,103 @@ async fn handle_single_transfer(
     }
 
     // Send each file sequentially
+    // Only check duplicate for single file transfer
     let check_duplicate = files.len() == 1;
 
     for (i, file) in files.iter().enumerate() {
         println!("\n===========================================");
         println!("File {} of {}", i + 1, files.len());
         println!("===========================================");
-        send::send_file(file, base_path, key, stream, check_duplicate).await?;
+        send::send_file(stream, file, base_path, key, check_duplicate).await?;
     }
+
+    Ok(())
+}
+
+async fn send_file_from_handle(
+    file_handle: std::fs::File,
+    filename: &str,
+    size: u64,
+    key: &[u8],
+    stream: &mut TcpStream,
+    check_duplicate: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use aes_gcm::{AeadCore, Aes256Gcm, KeyInit, aead::Aead, aead::OsRng};
+    use humansize::{BINARY, format_size};
+    use std::io::Read;
+    use std::time::{Duration, Instant};
+
+    const CHUNKSIZE: usize = 1_000_000; // 1 MB
+
+    let start = Instant::now();
+    let cipher = Aes256Gcm::new_from_slice(key)?;
+
+    println!("Sending file: {}", filename);
+    println!("File size: {}", format_size(size, BINARY));
+
+    // Send file details
+    stream.write_u64(filename.len() as u64).await?;
+    stream.write_all(filename.as_bytes()).await?;
+    stream.write_u64(size).await?;
+
+    // Check if receiver already has this file
+    if check_duplicate {
+        let has_file = stream.read_u64().await?;
+        if has_file == 1 {
+            let hash = utils::hash_file(&file_handle)?;
+            stream.write_all(&hash).await?;
+            let hashes_match = stream.read_u64().await?;
+            if hashes_match == 1 {
+                println!("Recipient already has this file, skipping.");
+                return Ok(());
+            }
+        }
+    }
+
+    // Stream file data immediately without waiting for confirmation
+    let mut file = file_handle;
+    let mut buffer = vec![0u8; CHUNKSIZE];
+    let mut progress = utils::ProgressTracker::new();
+    let mut bytes_sent = 0u64;
+
+    loop {
+        match file.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(bytes_read) => {
+                let chunk = &buffer[..bytes_read];
+
+                let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+                let encrypted_chunk = cipher
+                    .encrypt(&nonce, chunk)
+                    .map_err(|e| format!("Encryption error: {:?}", e))?;
+
+                let mut nonce_and_chunk = nonce.to_vec();
+                nonce_and_chunk.extend_from_slice(&encrypted_chunk);
+
+                // Send immediately (streaming)
+                stream.write_u64(nonce_and_chunk.len() as u64).await?;
+                stream.write_all(&nonce_and_chunk).await?;
+
+                bytes_sent += bytes_read as u64;
+                progress.update(bytes_sent, size)?;
+            }
+            Err(e) => return Err(Box::new(e)),
+        }
+    }
+
+    // Send chunk size of 0 to signal end of this file
+    stream.write_u64(0).await?;
+    progress.finish()?;
+
+    let elapsed = Instant::now() - start;
+    println!(
+        "Sending took {}",
+        humantime::format_duration(Duration::from_secs_f64(elapsed.as_secs_f64()))
+    );
+
+    let megabits = 8.0 * (size as f64 / 1_000_000.0);
+    let mbps = megabits / elapsed.as_secs_f64();
+    println!("Speed: {:.2}mbps", mbps);
 
     Ok(())
 }
@@ -410,7 +554,7 @@ async fn handle_single_file_transfer(
     size: u64,
     key: &[u8],
 ) -> Result<(), Box<dyn std::error::Error>> {
-    version_handshake(stream, false).await?;
+    utils::version_handshake(stream, false, VERSION).await?;
 
     // Mode confirmation (1 = send, 0 = receive)
     let peer_mode = stream.read_u64().await?;
@@ -434,73 +578,7 @@ async fn handle_single_file_transfer(
 
     // Clone the file handle to allow multiple reads
     let file_clone = file.try_clone()?;
-    send::send_file_from_handle(file_clone, filename, size, key, stream, true).await?;
+    send_file_from_handle(file_clone, filename, size, key, stream, true).await?;
 
-    Ok(())
-}
-
-pub async fn run_receiver(
-    output_dir: &std::path::PathBuf,
-    password: &str,
-    connection_mode: ConnectionMode,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let key = utils::get_key_from_password(password);
-
-    let mut stream = establish_connection(&connection_mode, 3290).await?;
-
-    version_handshake(&mut stream, true).await?;
-
-    // Mode confirmation (1 = send, 0 = receive)
-    stream.write_u64(0).await?;
-    let mode_ok = stream.read_u64().await?;
-    if mode_ok != 1 {
-        return Err("Both ends selected the same mode".into());
-    }
-
-    // Receive number of files
-    let num_files = stream.read_u64().await?;
-    println!("Receiving {} file(s)...\n", num_files);
-
-    // Receive folder info: 1 if sending a folder, 0 if single file
-    let is_folder = stream.read_u64().await? == 1;
-
-    // If receiving a folder, get the folder name and create it
-    let final_output_dir = if is_folder {
-        let folder_name_len = stream.read_u64().await? as usize;
-        let mut folder_name_bytes = vec![0; folder_name_len];
-        stream.read_exact(&mut folder_name_bytes).await?;
-        let folder_name = String::from_utf8_lossy(&folder_name_bytes).to_string();
-
-        let mut folder_path = output_dir.clone();
-        folder_path.push(&folder_name);
-        println!("Creating folder: {}\n", folder_name);
-
-        // Create the folder if it doesn't exist
-        if !folder_path.exists() {
-            std::fs::create_dir_all(&folder_path)?;
-        }
-
-        folder_path
-    } else {
-        output_dir.clone()
-    };
-
-    // Receive files
-    // For single file transfer, check for duplicates; for multiple files, stream without checking
-    let check_duplicate = num_files == 1;
-
-    for i in 0..num_files {
-        println!("===========================================");
-        println!("File {} of {}", i + 1, num_files);
-        println!("===========================================");
-        receive::receive_file(&final_output_dir, &key, &mut stream, check_duplicate).await?;
-        println!();
-    }
-
-    println!("===========================================");
-    println!("Transfer complete!");
-    println!("===========================================");
-
-    stream.shutdown().await?;
     Ok(())
 }
