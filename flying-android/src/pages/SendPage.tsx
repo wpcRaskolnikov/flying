@@ -21,6 +21,7 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 
 type ConnectionMode = "listen" | "connect";
 
@@ -93,9 +94,9 @@ function SendPage() {
     }
   };
 
-  const handleCopyPassword = () => {
+  const handleCopyPassword = async () => {
     if (password) {
-      navigator.clipboard.writeText(password);
+      await writeText(password);
       setSnackbar({
         open: true,
         message: "Password copied to clipboard",
@@ -165,7 +166,7 @@ function SendPage() {
   };
 
   return (
-    <Box sx={{ p: 2 }}>
+    <Box sx={{ p: 2, pt: 3 }}>
       <Box sx={{ mb: 3 }}>
         <Typography variant="body2" color="text.secondary" gutterBottom>
           File to Send
@@ -277,6 +278,7 @@ function SendPage() {
         autoHideDuration={3000}
         onClose={() => setSnackbar({ ...snackbar, open: false })}
         anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
+        sx={{ bottom: 72 }}
       >
         <Alert severity={snackbar.severity} sx={{ width: "100%" }}>
           {snackbar.message}

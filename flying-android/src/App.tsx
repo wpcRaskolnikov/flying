@@ -44,6 +44,7 @@ function App() {
             flexGrow: 1,
             overflow: "auto",
             pb: 7,
+            pt: "env(safe-area-inset-top)",
           }}
         >
           <Box sx={{ display: currentTab === 0 ? "block" : "none" }}>
@@ -64,6 +65,7 @@ function App() {
             bottom: 0,
             left: 0,
             right: 0,
+            pb: "env(safe-area-inset-bottom)",
           }}
           elevation={3}
         >

@@ -1,6 +1,6 @@
 [package]
 name = "flying-android"
-version = "0.1.0"
+version = "0.2.0"
 description = "A simple, secure, and fast file transfer tool"
 authors = ["wpcRaskolnikov <22pcwang@stu.edu.cn>"]
 edition = "2024"
@@ -25,3 +25,5 @@ serde_json = "1"
 flying = { path = "../../" }
 tokio = { version = "1.49.0", features = ["full"] }
 tauri-plugin-dialog = "2"
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-android-fs = "24.1.0"

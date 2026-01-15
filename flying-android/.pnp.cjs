@@ -34,6 +34,7 @@ const RAW_RUNTIME_STATE =
           ["@mui/material", "virtual:9981e83d7e1ebe45f7a8220f4b0d355e2f35957c7d627958c914a177ec4e948044182b566a234d4a53666a449837bc3cc0cfad6314678f68d6821e25f0ab46b1#npm:7.3.7"],\
           ["@tauri-apps/api", "npm:2.9.1"],\
           ["@tauri-apps/cli", "npm:2.9.6"],\
+          ["@tauri-apps/plugin-clipboard-manager", "npm:2.3.2"],\
           ["@tauri-apps/plugin-dialog", "npm:2.5.0"],\
           ["@tauri-apps/plugin-opener", "npm:2.5.3"],\
           ["@types/react", "npm:19.2.8"],\
@@ -1456,6 +1457,16 @@ const RAW_RUNTIME_STATE =
         "linkType": "HARD"\
       }]\
     ]],\
+    ["@tauri-apps/plugin-clipboard-manager", [\
+      ["npm:2.3.2", {\
+        "packageLocation": "../../../.yarn/berry/cache/@tauri-apps-plugin-clipboard-manager-npm-2.3.2-6804dc016c-10c0.zip/node_modules/@tauri-apps/plugin-clipboard-manager/",\
+        "packageDependencies": [\
+          ["@tauri-apps/api", "npm:2.9.1"],\
+          ["@tauri-apps/plugin-clipboard-manager", "npm:2.3.2"]\
+        ],\
+        "linkType": "HARD"\
+      }]\
+    ]],\
     ["@tauri-apps/plugin-dialog", [\
       ["npm:2.5.0", {\
         "packageLocation": "../../../.yarn/berry/cache/@tauri-apps-plugin-dialog-npm-2.5.0-a137c3c79f-10c0.zip/node_modules/@tauri-apps/plugin-dialog/",\
@@ -1958,6 +1969,7 @@ const RAW_RUNTIME_STATE =
           ["@mui/material", "virtual:9981e83d7e1ebe45f7a8220f4b0d355e2f35957c7d627958c914a177ec4e948044182b566a234d4a53666a449837bc3cc0cfad6314678f68d6821e25f0ab46b1#npm:7.3.7"],\
           ["@tauri-apps/api", "npm:2.9.1"],\
           ["@tauri-apps/cli", "npm:2.9.6"],\
+          ["@tauri-apps/plugin-clipboard-manager", "npm:2.3.2"],\
           ["@tauri-apps/plugin-dialog", "npm:2.5.0"],\
           ["@tauri-apps/plugin-opener", "npm:2.5.3"],\
           ["@types/react", "npm:19.2.8"],\

@@ -16,6 +16,7 @@ import {
   ContentCopy as CopyIcon,
 } from "@mui/icons-material";
 import { invoke } from "@tauri-apps/api/core";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 
 interface DiscoveredHost {
   name: string;
@@ -51,13 +52,13 @@ function DiscoverPage() {
     }
   };
 
-  const handleCopyIp = (ip: string) => {
-    navigator.clipboard.writeText(ip);
+  const handleCopyIp = async (ip: string) => {
+    await writeText(ip);
     setSnackbar({ open: true, message: `IP ${ip} copied to clipboard` });
   };
 
   return (
-    <Box sx={{ p: 2 }}>
+    <Box sx={{ p: 2, pt: 3 }}>
       <Box
         sx={{
           display: "flex",
@@ -129,6 +130,7 @@ function DiscoverPage() {
         onClose={() => setSnackbar({ ...snackbar, open: false })}
         message={snackbar.message}
         anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
+        sx={{ bottom: 72 }}
       />
     </Box>
   );

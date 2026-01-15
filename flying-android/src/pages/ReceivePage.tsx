@@ -21,6 +21,7 @@ import {
 } from "@mui/icons-material";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 
 type ConnectionMode = "listen" | "connect";
 
@@ -67,9 +68,9 @@ function ReceivePage() {
     };
   }, []);
 
-  const handleCopyPassword = () => {
+  const handleCopyPassword = async () => {
     if (password) {
-      navigator.clipboard.writeText(password);
+      await writeText(password);
       setSnackbar({
         open: true,
         message: "Password copied to clipboard",
@@ -128,7 +129,7 @@ function ReceivePage() {
   };
 
   return (
-    <Box sx={{ p: 2 }}>
+    <Box sx={{ p: 2, pt: 3 }}>
       <Alert severity="info" icon={<InfoIcon />} sx={{ mb: 3 }}>
         Files will be saved to the Download directory
       </Alert>
@@ -218,6 +219,7 @@ function ReceivePage() {
         autoHideDuration={3000}
         onClose={() => setSnackbar({ ...snackbar, open: false })}
         anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
+        sx={{ bottom: 72 }}
       >
         <SnackbarAlert severity={snackbar.severity} sx={{ width: "100%" }}>
           {snackbar.message}
