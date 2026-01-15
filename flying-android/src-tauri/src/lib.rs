@@ -1,22 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tauri::Emitter;
-
-fn resolve_android_content_uri(uri: &str) -> Result<PathBuf, String> {
-    if uri.starts_with("content://") {
-        // Extract path from content URI
-        // content://...document/primary%3ADownload%2Ftest%2F100
-        if let Some(path_part) = uri.split("primary%3A").nth(1) {
-            // Manual URL decode: replace %2F with / and %3A with :
-            let decoded = path_part.replace("%2F", "/").replace("%3A", ":");
-            let path = PathBuf::from(format!("/storage/emulated/0/{}", decoded));
-            return Ok(path);
-        }
-        Err(format!("Unsupported content URI format: {}", uri))
-    } else {
-        Ok(PathBuf::from(uri))
-    }
-}
+use tauri_plugin_android_fs::{AndroidFsExt, FileUri};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -54,6 +39,38 @@ fn get_download_dir(_app: tauri::AppHandle) -> Result<String, String> {
 }
 
 #[tauri::command]
+async fn pick_file_android(app: tauri::AppHandle) -> Result<Option<(String, String)>, String> {
+    let api = app.android_fs_async();
+
+    // Pick files to read
+    let selected_files = api
+        .file_picker()
+        .pick_files(
+            None,     // Initial location
+            &["*/*"], // Target MIME types (all files)
+            false,    // If true, only files on local device
+        )
+        .await
+        .map_err(|e| format!("File picker error: {}", e))?;
+
+    if selected_files.is_empty() {
+        Ok(None)
+    } else {
+        let uri = selected_files[0].clone();
+        let file_name = api
+            .get_name(&uri)
+            .await
+            .map_err(|e| format!("Failed to get file name: {}", e))?;
+
+        // Serialize FileUri to JSON string for passing to frontend
+        let uri_json =
+            serde_json::to_string(&uri).map_err(|e| format!("Failed to serialize URI: {}", e))?;
+
+        Ok(Some((uri_json, file_name)))
+    }
+}
+
+#[tauri::command]
 async fn discover_hosts() -> Result<Vec<DiscoveredHost>, String> {
     // Run the blocking discovery in a separate task
     let services = tokio::task::spawn_blocking(|| {
@@ -74,36 +91,54 @@ async fn discover_hosts() -> Result<Vec<DiscoveredHost>, String> {
 }
 
 #[tauri::command]
-async fn send_file(
-    file_path: String,
+async fn send_file_from_uri(
+    file_uri: String,
     password: String,
     connection_mode: ConnectionMode,
     connect_ip: Option<String>,
+    app: tauri::AppHandle,
     window: tauri::Window,
 ) -> Result<(), String> {
-    let path = resolve_android_content_uri(&file_path)?;
-    if !path.exists() {
-        return Err(format!(
-            "File does not exist: {} (resolved from: {})",
-            path.display(),
-            file_path
-        ));
-    }
-
     let mode = connection_mode.to_flying_mode(connect_ip);
 
     tokio::spawn(async move {
-        // Emit start event
         let _ = window.emit("send-start", serde_json::json!({}));
 
-        let result = flying::run_sender(&path, &password, mode, false, false).await;
+        let result: Result<(), String> = async {
+            // Get Android FS API
+            let api = app.android_fs_async();
+
+            // Deserialize the URI JSON string back to FileUri
+            let uri: FileUri = serde_json::from_str(&file_uri)
+                .map_err(|e| format!("Failed to parse URI: {}", e))?;
+
+            // Get file metadata
+            let file_name = api
+                .get_name(&uri)
+                .await
+                .map_err(|e| format!("Failed to get file name: {}", e))?;
+
+            // Open file for reading
+            let source_file = api
+                .open_file_readable(&uri)
+                .await
+                .map_err(|e| format!("Failed to open file: {}", e))?;
+
+            // Use the new run_sender_from_file function directly (no temp file needed!)
+            flying::run_sender_from_file(source_file, &file_name, &password, mode, false)
+                .await
+                .map_err(|e| format!("Send error: {}", e))?;
+
+            Ok(())
+        }
+        .await;
 
         match result {
             Ok(_) => {
                 let _ = window.emit("send-complete", serde_json::json!({}));
             }
             Err(e) => {
-                let _ = window.emit("send-error", format!("Send error: {}", e));
+                let _ = window.emit("send-error", e);
             }
         }
     });
@@ -146,11 +181,13 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_android_fs::init())
         .invoke_handler(tauri::generate_handler![
             generate_password,
             get_download_dir,
             discover_hosts,
-            send_file,
+            send_file_from_uri,
+            pick_file_android,
             receive_file
         ])
         .run(tauri::generate_context!())

@@ -6,10 +6,7 @@ use std::{
     path::Path,
     time::Instant,
 };
-use tokio::{
-    io::AsyncWriteExt,
-    net::TcpStream,
-};
+use tokio::{io::AsyncWriteExt, net::TcpStream};
 
 const CHUNKSIZE: usize = 1_000_000; // 1 MB
 
@@ -29,7 +26,8 @@ pub async fn send_file(
     let relative_path = if base_path.as_os_str().is_empty() {
         file_path.file_name().unwrap().to_string_lossy().to_string()
     } else {
-        file_path.strip_prefix(base_path)
+        file_path
+            .strip_prefix(base_path)
             .unwrap_or(file_path)
             .to_string_lossy()
             .to_string()
@@ -63,13 +61,62 @@ pub async fn send_file(
     Ok(())
 }
 
+pub async fn send_file_from_handle(
+    file_handle: File,
+    filename: &str,
+    size: u64,
+    key: &[u8],
+    stream: &mut TcpStream,
+    check_duplicate: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let start = Instant::now();
+    let cipher = Aes256Gcm::new_from_slice(key)?;
+
+    println!("Sending file: {}", filename);
+    println!("File size: {}", utils::make_size_readable(size));
+
+    // Send file details
+    send_file_details(filename, size, stream).await?;
+
+    // For single file, check if receiver already has it
+    if check_duplicate {
+        // Calculate hash from file handle
+        let need_transfer = check_for_file_handle(&file_handle, stream).await?;
+        if !need_transfer {
+            println!("Recipient already has this file, skipping.");
+            return Ok(());
+        }
+    }
+
+    // Stream file data immediately without waiting for confirmation
+    send_file_streaming_from_handle(file_handle, size, &cipher, stream).await?;
+
+    let elapsed = (Instant::now() - start).as_secs_f64();
+    println!("Sending took {}", utils::format_time(elapsed));
+
+    let megabits = 8.0 * (size as f64 / 1_000_000.0);
+    let mbps = megabits / elapsed;
+    println!("Speed: {:.2}mbps", mbps);
+
+    Ok(())
+}
+
 async fn send_file_streaming(
     file_path: &Path,
     size: u64,
     cipher: &Aes256Gcm,
     stream: &mut TcpStream,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut handle = File::open(file_path)?;
+    let handle = File::open(file_path)?;
+    send_file_streaming_from_handle(handle, size, cipher, stream).await
+}
+
+async fn send_file_streaming_from_handle(
+    mut handle: File,
+    size: u64,
+    cipher: &Aes256Gcm,
+    stream: &mut TcpStream,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut buffer = vec![0u8; CHUNKSIZE];
 
     let mut progress = utils::ProgressTracker::new();
@@ -128,6 +175,23 @@ async fn check_for_file(
     let has_file = stream.read_u64().await?;
     if has_file == 1 {
         let hash = utils::hash_file(filename)?;
+        stream.write_all(&hash).await?;
+        let hashes_match = stream.read_u64().await?;
+        Ok(hashes_match != 1)
+    } else {
+        Ok(true)
+    }
+}
+
+async fn check_for_file_handle(
+    file_handle: &File,
+    stream: &mut TcpStream,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    use tokio::io::AsyncReadExt;
+
+    let has_file = stream.read_u64().await?;
+    if has_file == 1 {
+        let hash = utils::hash_file_handle(file_handle)?;
         stream.write_all(&hash).await?;
         let hashes_match = stream.read_u64().await?;
         Ok(hashes_match != 1)

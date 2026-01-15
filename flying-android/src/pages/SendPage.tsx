@@ -20,7 +20,6 @@ import {
 } from "@mui/icons-material";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { open } from "@tauri-apps/plugin-dialog";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 
 type ConnectionMode = "listen" | "connect";
@@ -72,16 +71,11 @@ function SendPage() {
 
   const handleFileSelect = async () => {
     try {
-      const selected = await open({
-        multiple: false,
-        directory: false,
-      });
+      const result = await invoke<[string, string] | null>("pick_file_android");
 
-      if (selected && typeof selected === "string") {
-        setSelectedFile(selected);
-        // Extract filename from path
-        const filename =
-          selected.split("/").pop() || selected.split("\\").pop() || selected;
+      if (result) {
+        const [uri, filename] = result;
+        setSelectedFile(uri);
         setSelectedFileName(filename);
       }
     } catch (error) {
@@ -149,8 +143,8 @@ function SendPage() {
     }
 
     try {
-      await invoke("send_file", {
-        filePath: selectedFile,
+      await invoke("send_file_from_uri", {
+        fileUri: selectedFile,
         password: sendPassword,
         connectionMode,
         connectIp: connectIp.trim() || null,

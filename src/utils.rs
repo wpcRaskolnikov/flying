@@ -17,8 +17,32 @@ pub fn generate_password() -> String {
 
 pub fn hash_file(filename: &Path) -> io::Result<Vec<u8>> {
     let mut file = fs::File::open(filename)?;
+    hash_file_handle(&mut file)
+}
+
+pub fn hash_file_handle(file: &fs::File) -> io::Result<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    // Create a mutable reference we can work with
+    let mut file_ref = file;
+
+    // Seek to beginning in case the file was already read
+    file_ref.seek(SeekFrom::Start(0))?;
+
     let mut hasher = Sha256::new();
-    io::copy(&mut file, &mut hasher)?;
+    let mut buffer = vec![0u8; 1_000_000]; // 1MB buffer
+
+    loop {
+        let bytes_read = file_ref.read(&mut buffer)?;
+        if bytes_read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..bytes_read]);
+    }
+
+    // Seek back to beginning for subsequent reads
+    file_ref.seek(SeekFrom::Start(0))?;
+
     Ok(hasher.finalize().to_vec())
 }
 

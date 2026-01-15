@@ -264,6 +264,96 @@ pub async fn run_sender(
     Ok(())
 }
 
+pub async fn run_sender_from_file(
+    file: std::fs::File,
+    filename: &str,
+    password: &str,
+    connection_mode: ConnectionMode,
+    persistent: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let key = utils::get_key_from_password(password);
+
+    // Get file size
+    let size = file.metadata()?.len();
+
+    // If persistent mode, we need to keep a listener alive
+    let listener = if persistent && matches!(connection_mode, ConnectionMode::Listen) {
+        // Create IPv6 socket with dual-stack support
+        let addr = format!("[::]:{}", 3290).parse::<SocketAddr>()?;
+
+        let socket = Socket::new(Domain::IPV6, Type::STREAM, Some(Protocol::TCP))?;
+        socket.set_only_v6(false)?;
+        socket.set_reuse_address(true)?;
+        socket.bind(&addr.into())?;
+        socket.listen(128)?;
+
+        let std_listener: std::net::TcpListener = socket.into();
+        std_listener.set_nonblocking(true)?;
+        Some(TcpListener::from_std(std_listener)?)
+    } else {
+        None
+    };
+
+    let _mdns = if listener.is_some() {
+        Some(mdns::advertise_service(3290)?)
+    } else {
+        None
+    };
+
+    let mut transfer_count = 0u32;
+
+    loop {
+        transfer_count += 1;
+
+        if persistent {
+            println!("\n===========================================");
+            println!("Transfer #{}", transfer_count);
+            println!("===========================================");
+        }
+
+        let mut stream = if let Some(ref listener) = listener {
+            println!(
+                "Listening on {} (IPv4/IPv6 dual-stack)...",
+                format!("[::]:{}", 3290)
+            );
+            println!("Waiting for peer to connect...\n");
+            let (stream, socket_addr) = listener.accept().await?;
+            println!("Connection accepted from {}\n", socket_addr);
+            stream
+        } else {
+            establish_connection(&connection_mode, 3290).await?
+        };
+
+        // Handle the transfer
+        match handle_single_file_transfer(&mut stream, &file, filename, size, &key).await {
+            Ok(_) => {
+                println!("\n===========================================");
+                println!("Transfer complete!");
+                println!("===========================================");
+            }
+            Err(e) => {
+                eprintln!("\nTransfer error: {}", e);
+                if !persistent {
+                    return Err(e);
+                }
+                // In persistent mode, continue to next connection
+                eprintln!("Waiting for next connection...");
+            }
+        }
+
+        let _ = stream.shutdown().await;
+
+        // If not persistent, break after one transfer
+        if !persistent {
+            break;
+        }
+
+        println!("\nWaiting for next connection...");
+    }
+
+    Ok(())
+}
+
 async fn handle_single_transfer(
     stream: &mut TcpStream,
     files: &[std::path::PathBuf],
@@ -309,6 +399,42 @@ async fn handle_single_transfer(
         println!("===========================================");
         send::send_file(file, base_path, key, stream, check_duplicate).await?;
     }
+
+    Ok(())
+}
+
+async fn handle_single_file_transfer(
+    stream: &mut TcpStream,
+    file: &std::fs::File,
+    filename: &str,
+    size: u64,
+    key: &[u8],
+) -> Result<(), Box<dyn std::error::Error>> {
+    version_handshake(stream, false).await?;
+
+    // Mode confirmation (1 = send, 0 = receive)
+    let peer_mode = stream.read_u64().await?;
+    if peer_mode == 1 {
+        stream.write_u64(0).await?;
+        return Err("Both ends selected send mode".into());
+    } else {
+        stream.write_u64(1).await?;
+    }
+
+    // Send number of files (always 1 for single file transfer)
+    stream.write_u64(1).await?;
+
+    // Send folder info: 0 for single file
+    stream.write_u64(0).await?;
+
+    // Send the file
+    println!("\n===========================================");
+    println!("File 1 of 1");
+    println!("===========================================");
+
+    // Clone the file handle to allow multiple reads
+    let file_clone = file.try_clone()?;
+    send::send_file_from_handle(file_clone, filename, size, key, stream, true).await?;
 
     Ok(())
 }
