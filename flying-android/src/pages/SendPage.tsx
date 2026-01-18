@@ -71,7 +71,7 @@ function SendPage() {
 
   const handleFileSelect = async () => {
     try {
-      const result = await invoke<[string, string] | null>("pick_file_android");
+      const result = await invoke<[string, string] | null>("pick_file");
 
       if (result) {
         const [uri, filename] = result;
