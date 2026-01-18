@@ -15,9 +15,11 @@ use tokio::{
 pub async fn receiver_handshake(
     stream: &mut tokio::net::TcpStream,
     version: u64,
-) -> Result<(u64, bool, Option<String>), Box<dyn std::error::Error>> {
+    password: &str,
+) -> Result<([u8; 32], u64, bool, Option<String>), Box<dyn std::error::Error>> {
     utils::version_handshake(stream, true, version).await?;
     utils::mode_shake(stream, true).await?;
+    let key = utils::identity_handshake(stream, password, true).await?;
 
     // Receive metadata
     let num_files = stream.read_u64().await?;
@@ -32,7 +34,7 @@ pub async fn receiver_handshake(
         None
     };
 
-    Ok((num_files, is_folder, folder_name))
+    Ok((key, num_files, is_folder, folder_name))
 }
 
 async fn receive_file_details(

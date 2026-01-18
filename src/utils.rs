@@ -1,4 +1,7 @@
+use hkdf::Hkdf;
+use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
+use spake2::{Ed25519Group, Identity, Password, Spake2};
 use std::{
     fs,
     io::{self, Write},
@@ -12,6 +15,13 @@ pub fn get_key_from_password(password: &str) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(password.as_bytes());
     hasher.finalize().into()
+}
+
+fn derive_key(session_key: &[u8; 32], context: &[u8]) -> [u8; 32] {
+    let hk = Hkdf::<Sha256>::new(Some(b"flying"), session_key);
+    let mut okm = [0u8; 32];
+    hk.expand(context, &mut okm).expect("HKDF expand failed");
+    okm
 }
 
 pub fn generate_password() -> String {
@@ -116,6 +126,63 @@ pub async fn mode_shake(
     }
 
     Ok(())
+}
+
+fn get_mac(key: &[u8], data: &[u8]) -> Hmac<Sha256> {
+    let mut mac = Hmac::<Sha256>::new_from_slice(key).unwrap();
+    mac.update(data);
+    mac
+}
+
+pub async fn identity_handshake(
+    stream: &mut TcpStream,
+    password: &str,
+    is_receiver: bool,
+) -> Result<[u8; 32], Box<dyn std::error::Error>> {
+    let our_role = if is_receiver { "receiver" } else { "sender" };
+    let peer_role = if is_receiver { "sender" } else { "receiver" };
+
+    // Generate session key using SPAKE2
+    let start = if is_receiver {
+        Spake2::<Ed25519Group>::start_b
+    } else {
+        Spake2::<Ed25519Group>::start_a
+    };
+
+    let (s1, outbound_msg) = start(
+        &Password::new(password),
+        &Identity::new(b"sender"),
+        &Identity::new(b"receiver"),
+    );
+    stream.write_all(&outbound_msg).await?;
+
+    let mut inbound_msg = vec![0u8; 33];
+    stream.read_exact(&mut inbound_msg).await?;
+
+    let session_key = s1
+        .finish(&inbound_msg)
+        .map_err(|e| format!("SPAKE2 key exchange failed: {:?}", e))?;
+    let session_key = session_key
+        .try_into()
+        .map_err(|e| format!("Session key conversion failed: {:?}", e))?;
+
+    // Key confirmation
+    let hmac_key = derive_key(&session_key, b"hmac key");
+
+    let mac = get_mac(&hmac_key, our_role.as_bytes());
+    let our_tag = mac.finalize().into_bytes();
+    stream.write_all(&our_tag).await?;
+
+    let mac = get_mac(&hmac_key, peer_role.as_bytes());
+    let mut peer_tag = vec![0u8; 32];
+    stream.read_exact(&mut peer_tag).await?;
+
+    mac.verify_slice(&peer_tag)
+        .map_err(|e| format!("Key confirmation failed: {:?}", e))?;
+
+    // Derive AEC-GCM key
+    let aec_key = derive_key(&session_key, b"aec-gcm key");
+    Ok(aec_key)
 }
 
 pub fn create_listener(port: u16) -> Result<tokio::net::TcpListener, Box<dyn std::error::Error>> {

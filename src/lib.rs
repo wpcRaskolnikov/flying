@@ -110,13 +110,11 @@ pub async fn run_receiver(
     password: &str,
     connection_mode: ConnectionMode,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let key = utils::get_key_from_password(password);
-
     let mut stream = establish_connection(&connection_mode, 3290).await?;
 
     // Perform handshake and receive metadata
-    let (num_files, is_folder, folder_name) =
-        receive::receiver_handshake(&mut stream, VERSION).await?;
+    let (key, num_files, is_folder, folder_name) =
+        receive::receiver_handshake(&mut stream, VERSION, password).await?;
 
     println!("Receiving {} file(s)...\n", num_files);
 
@@ -183,8 +181,6 @@ pub async fn run_sender(
     connection_mode: ConnectionMode,
     persistent: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let key = utils::get_key_from_password(password);
-
     let mut files = Vec::new();
     if file_path.is_dir() {
         collect_files_recursive(file_path, &mut files)?;
@@ -256,9 +252,10 @@ pub async fn run_sender(
                 None
             };
 
-            send::sender_handshake(
+            let key = send::sender_handshake(
                 &mut stream,
                 VERSION,
+                password,
                 files.len() as u64,
                 is_folder,
                 folder_name_str,
@@ -312,14 +309,12 @@ pub async fn run_sender_from_handle(
     password: &str,
     connection_mode: ConnectionMode,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let key = utils::get_key_from_password(password);
-
     let size = file.metadata()?.len();
 
     let mut stream = establish_connection(&connection_mode, 3290).await?;
 
     let transfer_result = (async {
-        send::sender_handshake(&mut stream, VERSION, 1, false, None).await?;
+        let key = send::sender_handshake(&mut stream, VERSION, password, 1, false, None).await?;
 
         println!("\n===========================================");
         println!("File 1 of 1");

@@ -17,12 +17,14 @@ const CHUNKSIZE: usize = 1_000_000; // 1 MB
 pub async fn sender_handshake(
     stream: &mut tokio::net::TcpStream,
     version: u64,
+    password: &str,
     num_files: u64,
     is_folder: bool,
     folder_name: Option<&str>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<[u8; 32], Box<dyn std::error::Error>> {
     utils::version_handshake(stream, false, version).await?;
     utils::mode_shake(stream, false).await?;
+    let key = utils::identity_handshake(stream, password, false).await?;
 
     stream.write_u64(num_files).await?;
     stream.write_u64(if is_folder { 1 } else { 0 }).await?;
@@ -33,7 +35,7 @@ pub async fn sender_handshake(
         stream.write_all(folder_name.as_bytes()).await?;
     }
 
-    Ok(())
+    Ok(key)
 }
 
 async fn send_file_details(
