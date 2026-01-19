@@ -48,6 +48,11 @@ async fn pick_file(app: tauri::AppHandle) -> Result<Option<(String, String)>, St
         .await
         .map_err(|e| format!("File picker error: {}", e))?;
 
+    // Check if user cancelled the file picker
+    let Some(uri) = uri else {
+        return Ok(None);
+    };
+
     let file_name = api
         .get_name(&uri)
         .await
@@ -90,6 +95,11 @@ async fn pick_folder(app: tauri::AppHandle) -> Result<Option<(String, String)>, 
         .pick_dir(None, false)
         .await
         .map_err(|e| format!("dir picker error: {}", e))?;
+
+    // Check if user cancelled the folder picker
+    let Some(uri) = uri else {
+        return Ok(None);
+    };
 
     let file_name = api
         .get_name(&uri)
@@ -149,6 +159,7 @@ async fn send_file_from_uri(
     connection_mode: ConnectionMode,
     connect_ip: Option<String>,
     window: tauri::Window,
+    #[cfg(target_os = "android")] app: tauri::AppHandle,
 ) -> Result<(), String> {
     let mode = connection_mode.to_flying_mode(connect_ip);
 
@@ -163,7 +174,7 @@ async fn send_file_from_uri(
 
             #[cfg(target_os = "android")]
             let result: Result<(), String> = async {
-                use tauri_plugin_android_fs::FileUri;
+                use tauri_plugin_android_fs::{AndroidFsExt, FileUri};
 
                 let api = app.android_fs_async();
                 let uri = FileUri::from_json_str(&file_uri)
@@ -232,7 +243,8 @@ async fn receive_file(
                 .map_err(|e| format!("Failed to parse output directory URI: {}", e))?;
 
             // Persist access permission
-            api.take_persistable_uri_permission(&output_uri)
+            api.file_picker()
+                .persist_uri_permission(&output_uri)
                 .await
                 .map_err(|e| format!("Failed to persist directory permission: {}", e))?;
 
