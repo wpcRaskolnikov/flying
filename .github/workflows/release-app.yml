@@ -45,7 +45,9 @@ jobs:
 
       - name: install frontend dependencies
         working-directory: ./flying-android
-        run: yarn install
+        run: |
+          corepack enable
+          yarn install
 
       - uses: tauri-apps/tauri-action@v0
         env:
