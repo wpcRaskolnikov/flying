@@ -13,7 +13,17 @@ Fast, secure, encrypted file transfer tool with automatic peer discovery.
 
 ## Installation
 
-### Desktop (Linux, macOS, Windows)
+### Desktop & Mobile GUI
+
+Flying now has a **graphical user interface (GUI)** version for both desktop and mobile users!
+
+Download the GUI app for your platform from the [releases page](https://github.com/wpcRaskolnikov/flying/releases):
+- **Windows**: `.msi` or `.exe` installer
+- **macOS**: `.dmg` or `.app`
+- **Linux**: `.AppImage`, `.deb`, or `.rpm`
+- **Android**: `.apk` installer
+
+### Command Line Interface (CLI)
 
 #### Option 1: cargo-binstall
 
@@ -23,7 +33,7 @@ cargo binstall flying --git https://github.com/wpcRaskolnikov/flying
 
 #### Option 2: Download from Releases
 
-Download the latest binary for your platform from [releases page](https://github.com/wpcRaskolnikov/flying/releases).
+Download the latest CLI binary for your platform from [releases page](https://github.com/wpcRaskolnikov/flying/releases).
 
 #### Option 3: Build from Source
 
@@ -32,10 +42,6 @@ cargo build --release
 ```
 
 Binary: `target/release/flying`
-
-### Android
-
-Download the Flying Android app from the [releases page](https://github.com/wpcRaskolnikov/flying/releases).
 
 ## Quick Start
 
