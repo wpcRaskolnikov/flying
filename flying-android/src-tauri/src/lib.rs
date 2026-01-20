@@ -153,13 +153,80 @@ async fn discover_hosts() -> Result<Vec<DiscoveredHost>, String> {
 }
 
 #[tauri::command]
+#[cfg(target_os = "android")]
 async fn send_file_from_uri(
     file_uri: String,
     password: String,
     connection_mode: ConnectionMode,
     connect_ip: Option<String>,
     window: tauri::Window,
-    #[cfg(target_os = "android")] app: tauri::AppHandle,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let mode = connection_mode.to_flying_mode(connect_ip);
+
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("Failed to create local runtime");
+
+        rt.block_on(async {
+            let _ = window.emit("send-start", serde_json::json!({}));
+
+            #[cfg(target_os = "android")]
+            let result: Result<(), String> = async {
+                use tauri_plugin_android_fs::{AndroidFsExt, FileUri};
+
+                let api = app.android_fs_async();
+                let uri = FileUri::from_json_str(&file_uri)
+                    .map_err(|e| format!("Failed to parse URI: {}", e))?;
+                let file_name = api
+                    .get_name(&uri)
+                    .await
+                    .map_err(|e| format!("Failed to get file name: {}", e))?;
+                let source_file = api
+                    .open_file_readable(&uri)
+                    .await
+                    .map_err(|e| format!("Failed to open file: {}", e))?;
+                flying::run_sender_from_handle(source_file, &file_name, &password, mode)
+                    .await
+                    .map_err(|e| format!("Send error: {}", e))?;
+                Ok(())
+            }
+            .await;
+
+            #[cfg(not(target_os = "android"))]
+            let result: Result<(), String> = async {
+                let file_path = std::path::PathBuf::from(&file_uri);
+                flying::run_sender(&file_path, &password, mode, false)
+                    .await
+                    .map_err(|e| format!("Send error: {}", e))?;
+                Ok(())
+            }
+            .await;
+
+            match result {
+                Ok(_) => {
+                    let _ = window.emit("send-complete", serde_json::json!({}));
+                }
+                Err(e) => {
+                    let _ = window.emit("send-error", e);
+                }
+            }
+        });
+    });
+
+    Ok(())
+}
+
+#[tauri::command]
+#[cfg(not(target_os = "android"))]
+async fn send_file_from_uri(
+    file_uri: String,
+    password: String,
+    connection_mode: ConnectionMode,
+    connect_ip: Option<String>,
+    window: tauri::Window,
 ) -> Result<(), String> {
     let mode = connection_mode.to_flying_mode(connect_ip);
 
