@@ -17,6 +17,7 @@ import {
   Download as DownloadIcon,
   ContentCopy as CopyIcon,
   Folder as FolderIcon,
+  Refresh as RefreshIcon,
 } from "@mui/icons-material";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -80,6 +81,23 @@ function ReceivePage() {
     }
   };
 
+  const handleRegeneratePassword = async () => {
+    if (password) {
+      try {
+        const newPassword = await invoke<string>("generate_password");
+        setPassword(newPassword);
+      } catch (error) {
+        console.error("Failed to generate password:", error);
+        setSnackbar({
+          open: true,
+          message: "Failed to generate password",
+          severity: "error",
+        });
+        return;
+      }
+    }
+  };
+
   const handlePickFolder = async () => {
     try {
       const result = await invoke<[string, string] | null>("pick_folder");
@@ -123,7 +141,7 @@ function ReceivePage() {
     }
 
     let receivePassword = password.trim();
-    if (connectionMode === "listen") {
+    if (!receivePassword && connectionMode === "listen") {
       try {
         receivePassword = await invoke<string>("generate_password");
         setPassword(receivePassword);
@@ -222,6 +240,18 @@ function ReceivePage() {
             >
               <CopyIcon />
             </IconButton>
+          )}
+          {connectionMode === "listen" && password && (
+            <Button
+              variant="contained"
+              startIcon={<RefreshIcon />}
+              onClick={handleRegeneratePassword}
+              disabled={isSending}
+              size="small"
+              sx={{ whiteSpace: "nowrap", minWidth: "auto", px: 2 }}
+            >
+              Regenerate
+            </Button>
           )}
         </Box>
       </Box>
