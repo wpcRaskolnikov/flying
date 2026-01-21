@@ -158,8 +158,8 @@ async fn send_file_from_uri(
     password: String,
     connection_mode: ConnectionMode,
     connect_ip: Option<String>,
+    _app: tauri::AppHandle,
     window: tauri::Window,
-    #[cfg(target_os = "android")] app: tauri::AppHandle,
 ) -> Result<(), String> {
     let mode = connection_mode.to_flying_mode(connect_ip);
 
@@ -176,7 +176,7 @@ async fn send_file_from_uri(
             let result: Result<(), String> = async {
                 use tauri_plugin_android_fs::{AndroidFsExt, FileUri};
 
-                let api = app.android_fs_async();
+                let api = _app.android_fs_async();
                 let uri = FileUri::from_json_str(&file_uri)
                     .map_err(|e| format!("Failed to parse URI: {}", e))?;
                 let file_name = api
