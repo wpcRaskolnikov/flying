@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::sync::Arc;
 use tauri::Emitter;
+use tokio::sync::Mutex;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -26,9 +28,37 @@ struct DiscoveredHost {
     ip: String,
 }
 
+#[derive(Default)]
+struct TransferState {
+    send_abort_handle: Option<tokio::sync::oneshot::Sender<()>>,
+    receive_abort_handle: Option<tokio::sync::oneshot::Sender<()>>,
+}
+
 #[tauri::command]
 fn generate_password() -> Result<String, String> {
     Ok(flying::utils::generate_password())
+}
+
+#[tauri::command]
+async fn cancel_send(state: tauri::State<'_, Arc<Mutex<TransferState>>>) -> Result<(), String> {
+    let mut transfer_state = state.lock().await;
+    if let Some(abort_sender) = transfer_state.send_abort_handle.take() {
+        let _ = abort_sender.send(());
+        Ok(())
+    } else {
+        Err("No active send transfer to cancel".to_string())
+    }
+}
+
+#[tauri::command]
+async fn cancel_receive(state: tauri::State<'_, Arc<Mutex<TransferState>>>) -> Result<(), String> {
+    let mut transfer_state = state.lock().await;
+    if let Some(abort_sender) = transfer_state.receive_abort_handle.take() {
+        let _ = abort_sender.send(());
+        Ok(())
+    } else {
+        Err("No active receive transfer to cancel".to_string())
+    }
 }
 
 #[tauri::command]
@@ -160,8 +190,12 @@ async fn send_file_from_uri(
     connect_ip: Option<String>,
     _app: tauri::AppHandle,
     window: tauri::Window,
+    state: tauri::State<'_, Arc<Mutex<TransferState>>>,
 ) -> Result<(), String> {
     let mode = connection_mode.to_flying_mode(connect_ip);
+
+    // Spawn in a blocking thread since flying operations are not Send-safe
+    let (abort_handle, abort_registration) = tokio::sync::oneshot::channel::<()>();
 
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -187,20 +221,30 @@ async fn send_file_from_uri(
                     .open_file_readable(&uri)
                     .await
                     .map_err(|e| format!("Failed to open file: {}", e))?;
-                flying::run_sender_from_handle(source_file, &file_name, &password, mode)
-                    .await
-                    .map_err(|e| format!("Send error: {}", e))?;
-                Ok(())
+
+                tokio::select! {
+                    _ = abort_registration => {
+                        Err("Transfer cancelled".to_string())
+                    }
+                    result = flying::run_sender_from_handle(source_file, &file_name, &password, mode) => {
+                        result.map_err(|e| format!("Send error: {}", e))
+                    }
+                }
             }
             .await;
 
             #[cfg(not(target_os = "android"))]
             let result: Result<(), String> = async {
                 let file_path = std::path::PathBuf::from(&file_uri);
-                flying::run_sender(&file_path, &password, mode, false)
-                    .await
-                    .map_err(|e| format!("Send error: {}", e))?;
-                Ok(())
+
+                tokio::select! {
+                    _ = abort_registration => {
+                        Err("Transfer cancelled".to_string())
+                    }
+                    result = flying::run_sender(&file_path, &password, mode, false) => {
+                        result.map_err(|e| format!("Send error: {}", e))
+                    }
+                }
             }
             .await;
 
@@ -215,6 +259,9 @@ async fn send_file_from_uri(
         });
     });
 
+    let mut transfer_state = state.lock().await;
+    transfer_state.send_abort_handle = Some(abort_handle);
+
     Ok(())
 }
 
@@ -227,42 +274,60 @@ async fn receive_file(
     output_dir_uri: String,
     app: tauri::AppHandle,
     window: tauri::Window,
+    state: tauri::State<'_, Arc<Mutex<TransferState>>>,
 ) -> Result<(), String> {
     let mode = connection_mode.to_flying_mode(connect_ip);
 
-    tokio::spawn(async move {
-        let _ = window.emit("receive-start", serde_json::json!({}));
+    let (abort_handle, abort_registration) = tokio::sync::oneshot::channel::<()>();
 
-        let result: Result<(), String> = async {
-            use tauri_plugin_android_fs::{AndroidFsExt, FileUri};
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("Failed to create local runtime");
 
-            let api = app.android_fs_async();
+        rt.block_on(async {
+            let _ = window.emit("receive-start", serde_json::json!({}));
 
-            // Parse output directory URI
-            let output_uri = FileUri::from_json_str(&output_dir_uri)
-                .map_err(|e| format!("Failed to parse output directory URI: {}", e))?;
+            let result: Result<(), String> = async {
+                use tauri_plugin_android_fs::{AndroidFsExt, FileUri};
 
-            // For Android, we need to adapt the receiver to write to Android content URI
-            // This is a temporary solution that uses the default path
-            // TODO: Implement proper Android content URI writing in flying crate
-            let download_dir = PathBuf::from("/storage/emulated/0/Download");
-            flying::run_receiver(&download_dir, &password, mode)
-                .await
-                .map_err(|e| format!("Receive error: {}", e))?;
+                let api = app.android_fs_async();
 
-            Ok(())
-        }
-        .await;
+                let output_uri = FileUri::from_json_str(&output_dir_uri)
+                    .map_err(|e| format!("Failed to parse output directory URI: {}", e))?;
 
-        match result {
-            Ok(_) => {
-                let _ = window.emit("receive-complete", serde_json::json!({}));
+                // For Android, we need to adapt the receiver to write to Android content URI
+                // This is a temporary solution that uses the default path
+                // TODO: Implement proper Android content URI writing in flying crate
+                let download_dir = PathBuf::from("/storage/emulated/0/Download");
+
+                // Check for cancellation or run transfer
+                tokio::select! {
+                    _ = abort_registration => {
+                        Err("Transfer cancelled".to_string())
+                    }
+                    result = flying::run_receiver(&download_dir, &password, mode) => {
+                        result.map_err(|e| format!("Receive error: {}", e))
+                    }
+                }
             }
-            Err(e) => {
-                let _ = window.emit("receive-error", e);
+            .await;
+
+            match result {
+                Ok(_) => {
+                    let _ = window.emit("receive-complete", serde_json::json!({}));
+                }
+                Err(e) => {
+                    let _ = window.emit("receive-error", e);
+                }
             }
-        }
+        });
     });
+
+    // Store the abort sender
+    let mut transfer_state = state.lock().await;
+    transfer_state.receive_abort_handle = Some(abort_handle);
 
     Ok(())
 }
@@ -275,42 +340,70 @@ async fn receive_file(
     connect_ip: Option<String>,
     output_dir_uri: String,
     window: tauri::Window,
+    state: tauri::State<'_, Arc<Mutex<TransferState>>>,
 ) -> Result<(), String> {
     let output_dir = PathBuf::from(output_dir_uri);
     let mode = connection_mode.to_flying_mode(connect_ip);
 
-    tokio::spawn(async move {
-        let _ = window.emit("receive-start", serde_json::json!({}));
+    let (abort_handle, abort_registration) = tokio::sync::oneshot::channel::<()>();
 
-        let result = flying::run_receiver(&output_dir, &password, mode).await;
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("Failed to create local runtime");
 
-        match result {
-            Ok(_) => {
-                let _ = window.emit("receive-complete", serde_json::json!({}));
+        rt.block_on(async {
+            let _ = window.emit("receive-start", serde_json::json!({}));
+
+            // Check for cancellation or run transfer
+            let result = tokio::select! {
+                _ = abort_registration => {
+                    Err("Transfer cancelled".to_string())
+                }
+                result = flying::run_receiver(&output_dir, &password, mode) => {
+                    result.map_err(|e| format!("Receive error: {}", e))
+                }
+            };
+
+            match result {
+                Ok(_) => {
+                    let _ = window.emit("receive-complete", serde_json::json!({}));
+                }
+                Err(e) => {
+                    let _ = window.emit("receive-error", e);
+                }
             }
-            Err(e) => {
-                let _ = window.emit("receive-error", format!("Receive error: {}", e));
-            }
-        }
+        });
     });
+
+    // Store the abort sender
+    let mut transfer_state = state.lock().await;
+    transfer_state.receive_abort_handle = Some(abort_handle);
 
     Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let transfer_state = Arc::new(Mutex::new(TransferState::default()));
+
     tauri::Builder::default()
+        .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_android_fs::init())
+        .manage(transfer_state)
         .invoke_handler(tauri::generate_handler![
             generate_password,
             discover_hosts,
             send_file_from_uri,
             pick_file,
             pick_folder,
-            receive_file
+            receive_file,
+            cancel_send,
+            cancel_receive,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

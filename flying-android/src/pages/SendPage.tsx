@@ -18,6 +18,8 @@ import {
   Send as SendIcon,
   ContentCopy as CopyIcon,
   Folder as FolderIcon,
+  Refresh as RefreshIcon,
+  Stop as StopIcon,
 } from "@mui/icons-material";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -119,6 +121,25 @@ function SendPage() {
     }
   };
 
+  const handleGeneratePassword = async () => {
+    try {
+      const generatedPassword = await invoke<string>("generate_password");
+      setPassword(generatedPassword);
+      setSnackbar({
+        open: true,
+        message: "Password generated",
+        severity: "success",
+      });
+    } catch (error) {
+      console.error("Failed to generate password:", error);
+      setSnackbar({
+        open: true,
+        message: "Failed to generate password",
+        severity: "error",
+      });
+    }
+  };
+
   const handleSend = async () => {
     if (!selectedFile) {
       setSnackbar({
@@ -138,9 +159,10 @@ function SendPage() {
       return;
     }
 
-    // Generate password for listen mode when sending
     let sendPassword = password.trim();
-    if (connectionMode === "listen") {
+
+    // Auto-generate password in listen mode if not provided
+    if (connectionMode === "listen" && !sendPassword) {
       try {
         sendPassword = await invoke<string>("generate_password");
         setPassword(sendPassword);
@@ -153,10 +175,12 @@ function SendPage() {
         });
         return;
       }
-    } else if (!sendPassword) {
+    }
+
+    if (!sendPassword) {
       setSnackbar({
         open: true,
-        message: "Please enter a password",
+        message: "Please enter or generate a password",
         severity: "error",
       });
       return;
@@ -174,6 +198,26 @@ function SendPage() {
       setSnackbar({
         open: true,
         message: `Failed to send file: ${error}`,
+        severity: "error",
+      });
+    }
+  };
+
+  const handleCancelSend = async () => {
+    try {
+      await invoke("cancel_send");
+      setIsSending(false);
+      setStatus("");
+      setSnackbar({
+        open: true,
+        message: "Transfer cancelled",
+        severity: "success",
+      });
+    } catch (error) {
+      console.error("Failed to cancel transfer:", error);
+      setSnackbar({
+        open: true,
+        message: `Failed to cancel: ${error}`,
         severity: "error",
       });
     }
@@ -223,28 +267,33 @@ function SendPage() {
 
       <Box sx={{ mb: 3 }}>
         <Typography variant="body2" color="text.secondary" gutterBottom>
-          Password{" "}
-          {connectionMode === "listen" ? "(Auto-generated on send)" : ""}
+          Password
         </Typography>
         <Box sx={{ display: "flex", gap: 1 }}>
           <TextField
             fullWidth
-            placeholder={
-              connectionMode === "listen"
-                ? "Will be generated"
-                : "Enter password"
-            }
+            placeholder="Enter or generate password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            disabled={isSending || connectionMode === "listen"}
+            disabled={isSending}
             type="text"
             size="small"
           />
-          {connectionMode === "listen" && password && (
+          <IconButton
+            onClick={handleGeneratePassword}
+            color="primary"
+            size="small"
+            disabled={isSending}
+            title="Generate password"
+          >
+            <RefreshIcon />
+          </IconButton>
+          {password && (
             <IconButton
               onClick={handleCopyPassword}
               color="primary"
               size="small"
+              title="Copy password"
             >
               <CopyIcon />
             </IconButton>
@@ -290,16 +339,28 @@ function SendPage() {
         </Box>
       )}
 
-      <Button
-        fullWidth
-        variant="contained"
-        size="large"
-        startIcon={<SendIcon />}
-        onClick={handleSend}
-        disabled={isSending}
-      >
-        START SENDING
-      </Button>
+      {!isSending ? (
+        <Button
+          fullWidth
+          variant="contained"
+          size="large"
+          startIcon={<SendIcon />}
+          onClick={handleSend}
+        >
+          START SENDING
+        </Button>
+      ) : (
+        <Button
+          fullWidth
+          variant="contained"
+          size="large"
+          color="error"
+          startIcon={<StopIcon />}
+          onClick={handleCancelSend}
+        >
+          STOP
+        </Button>
+      )}
 
       <Snackbar
         open={snackbar.open}

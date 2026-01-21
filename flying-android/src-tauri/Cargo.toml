@@ -27,3 +27,4 @@ tokio = { version = "1.49.0", features = ["full"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-android-fs = "24.1.0"
+tauri-plugin-store = "2"

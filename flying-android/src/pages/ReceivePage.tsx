@@ -17,6 +17,8 @@ import {
   Download as DownloadIcon,
   ContentCopy as CopyIcon,
   Folder as FolderIcon,
+  Refresh as RefreshIcon,
+  Stop as StopIcon,
 } from "@mui/icons-material";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -80,6 +82,25 @@ function ReceivePage() {
     }
   };
 
+  const handleGeneratePassword = async () => {
+    try {
+      const generatedPassword = await invoke<string>("generate_password");
+      setPassword(generatedPassword);
+      setSnackbar({
+        open: true,
+        message: "Password generated",
+        severity: "success",
+      });
+    } catch (error) {
+      console.error("Failed to generate password:", error);
+      setSnackbar({
+        open: true,
+        message: "Failed to generate password",
+        severity: "error",
+      });
+    }
+  };
+
   const handlePickFolder = async () => {
     try {
       const result = await invoke<[string, string] | null>("pick_folder");
@@ -123,7 +144,8 @@ function ReceivePage() {
     }
 
     let receivePassword = password.trim();
-    if (connectionMode === "listen") {
+
+    if (connectionMode === "listen" && !receivePassword) {
       try {
         receivePassword = await invoke<string>("generate_password");
         setPassword(receivePassword);
@@ -136,10 +158,12 @@ function ReceivePage() {
         });
         return;
       }
-    } else if (!receivePassword) {
+    }
+
+    if (!receivePassword) {
       setSnackbar({
         open: true,
-        message: "Please enter a password",
+        message: "Please enter or generate a password",
         severity: "error",
       });
       return;
@@ -157,6 +181,26 @@ function ReceivePage() {
       setSnackbar({
         open: true,
         message: `Failed to receive file: ${error}`,
+        severity: "error",
+      });
+    }
+  };
+
+  const handleCancelReceive = async () => {
+    try {
+      await invoke("cancel_receive");
+      setIsReceiving(false);
+      setStatus("");
+      setSnackbar({
+        open: true,
+        message: "Transfer cancelled",
+        severity: "success",
+      });
+    } catch (error) {
+      console.error("Failed to cancel transfer:", error);
+      setSnackbar({
+        open: true,
+        message: `Failed to cancel: ${error}`,
         severity: "error",
       });
     }
@@ -197,28 +241,33 @@ function ReceivePage() {
 
       <Box sx={{ mb: 3 }}>
         <Typography variant="body2" color="text.secondary" gutterBottom>
-          Password{" "}
-          {connectionMode === "listen" ? "(Auto-generated on receive)" : ""}
+          Password
         </Typography>
         <Box sx={{ display: "flex", gap: 1 }}>
           <TextField
             fullWidth
-            placeholder={
-              connectionMode === "listen"
-                ? "Will be generated"
-                : "Enter password"
-            }
+            placeholder="Enter or generate password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            disabled={isReceiving || connectionMode === "listen"}
+            disabled={isReceiving}
             type="text"
             size="small"
           />
-          {connectionMode === "listen" && password && (
+          <IconButton
+            onClick={handleGeneratePassword}
+            color="primary"
+            size="small"
+            disabled={isReceiving}
+            title="Generate password"
+          >
+            <RefreshIcon />
+          </IconButton>
+          {password && (
             <IconButton
               onClick={handleCopyPassword}
               color="primary"
               size="small"
+              title="Copy password"
             >
               <CopyIcon />
             </IconButton>
@@ -264,16 +313,28 @@ function ReceivePage() {
         </Box>
       )}
 
-      <Button
-        fullWidth
-        variant="contained"
-        size="large"
-        startIcon={<DownloadIcon />}
-        onClick={handleReceive}
-        disabled={isReceiving}
-      >
-        START RECEIVING
-      </Button>
+      {!isReceiving ? (
+        <Button
+          fullWidth
+          variant="contained"
+          size="large"
+          startIcon={<DownloadIcon />}
+          onClick={handleReceive}
+        >
+          START RECEIVING
+        </Button>
+      ) : (
+        <Button
+          fullWidth
+          variant="contained"
+          size="large"
+          color="error"
+          startIcon={<StopIcon />}
+          onClick={handleCancelReceive}
+        >
+          STOP
+        </Button>
+      )}
 
       <Snackbar
         open={snackbar.open}

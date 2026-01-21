@@ -37,6 +37,7 @@ const RAW_RUNTIME_STATE =
           ["@tauri-apps/plugin-clipboard-manager", "npm:2.3.2"],\
           ["@tauri-apps/plugin-dialog", "npm:2.6.0"],\
           ["@tauri-apps/plugin-opener", "npm:2.5.3"],\
+          ["@tauri-apps/plugin-store", "npm:2.4.2"],\
           ["@types/react", "npm:19.2.8"],\
           ["@types/react-dom", "virtual:9981e83d7e1ebe45f7a8220f4b0d355e2f35957c7d627958c914a177ec4e948044182b566a234d4a53666a449837bc3cc0cfad6314678f68d6821e25f0ab46b1#npm:19.2.3"],\
           ["@vitejs/plugin-react", "virtual:9981e83d7e1ebe45f7a8220f4b0d355e2f35957c7d627958c914a177ec4e948044182b566a234d4a53666a449837bc3cc0cfad6314678f68d6821e25f0ab46b1#npm:4.7.0"],\
@@ -1487,6 +1488,16 @@ const RAW_RUNTIME_STATE =
         "linkType": "HARD"\
       }]\
     ]],\
+    ["@tauri-apps/plugin-store", [\
+      ["npm:2.4.2", {\
+        "packageLocation": "../../../.yarn/berry/cache/@tauri-apps-plugin-store-npm-2.4.2-b5b20cdc9f-10c0.zip/node_modules/@tauri-apps/plugin-store/",\
+        "packageDependencies": [\
+          ["@tauri-apps/api", "npm:2.9.1"],\
+          ["@tauri-apps/plugin-store", "npm:2.4.2"]\
+        ],\
+        "linkType": "HARD"\
+      }]\
+    ]],\
     ["@types/babel__core", [\
       ["npm:7.20.5", {\
         "packageLocation": "../../../.yarn/berry/cache/@types-babel__core-npm-7.20.5-4d95f75eab-10c0.zip/node_modules/@types/babel__core/",\
@@ -1972,6 +1983,7 @@ const RAW_RUNTIME_STATE =
           ["@tauri-apps/plugin-clipboard-manager", "npm:2.3.2"],\
           ["@tauri-apps/plugin-dialog", "npm:2.6.0"],\
           ["@tauri-apps/plugin-opener", "npm:2.5.3"],\
+          ["@tauri-apps/plugin-store", "npm:2.4.2"],\
           ["@types/react", "npm:19.2.8"],\
           ["@types/react-dom", "virtual:9981e83d7e1ebe45f7a8220f4b0d355e2f35957c7d627958c914a177ec4e948044182b566a234d4a53666a449837bc3cc0cfad6314678f68d6821e25f0ab46b1#npm:19.2.3"],\
           ["@vitejs/plugin-react", "virtual:9981e83d7e1ebe45f7a8220f4b0d355e2f35957c7d627958c914a177ec4e948044182b566a234d4a53666a449837bc3cc0cfad6314678f68d6821e25f0ab46b1#npm:4.7.0"],\

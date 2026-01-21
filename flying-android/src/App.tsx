@@ -12,8 +12,9 @@ import {
   Search as SearchIcon,
   Send as SendIcon,
   Download as DownloadIcon,
+  Settings as SettingsIcon,
 } from "@mui/icons-material";
-import { DiscoverPage, SendPage, ReceivePage } from "./pages";
+import { DiscoverPage, SendPage, ReceivePage, SettingsPage } from "./pages";
 
 const theme = createTheme({
   palette: {
@@ -56,6 +57,9 @@ function App() {
           <Box sx={{ display: currentTab === 2 ? "block" : "none" }}>
             <ReceivePage />
           </Box>
+          <Box sx={{ display: currentTab === 3 ? "block" : "none" }}>
+            <SettingsPage />
+          </Box>
         </Box>
 
         {/* Bottom Navigation */}
@@ -79,6 +83,7 @@ function App() {
             <BottomNavigationAction label="Discover" icon={<SearchIcon />} />
             <BottomNavigationAction label="Send" icon={<SendIcon />} />
             <BottomNavigationAction label="Receive" icon={<DownloadIcon />} />
+            <BottomNavigationAction label="Settings" icon={<SettingsIcon />} />
           </BottomNavigation>
         </Paper>
       </Box>
