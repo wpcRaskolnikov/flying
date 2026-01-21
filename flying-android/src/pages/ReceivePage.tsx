@@ -23,6 +23,8 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
+import { Store } from "@tauri-apps/plugin-store";
+import { downloadDir } from "@tauri-apps/api/path";
 
 type ConnectionMode = "listen" | "connect";
 
@@ -42,6 +44,29 @@ function ReceivePage() {
   });
 
   useEffect(() => {
+    // Load default folder from store
+    const loadDefaultFolder = async () => {
+      try {
+        const store = await Store.load("settings.json");
+        let folderPath = await store.get<string>("default_folder_path");
+
+        // Initialize with Download folder if not set
+        if (!folderPath) {
+          folderPath = await downloadDir();
+
+          // Save to store
+          await store.set("default_folder_path", folderPath);
+          await store.save();
+        }
+
+        setOutputDirName(folderPath);
+        setOutputDirUri(folderPath);
+      } catch (error) {
+        console.error("Failed to load default folder:", error);
+      }
+    };
+    loadDefaultFolder();
+
     const unlisten1 = listen("receive-start", () => {
       setIsReceiving(true);
       setStatus("Receiving file...");
@@ -105,12 +130,12 @@ function ReceivePage() {
     try {
       const result = await invoke<[string, string] | null>("pick_folder");
       if (result) {
-        const [uri, name] = result;
+        const [uri, _name] = result;
         setOutputDirUri(uri);
-        setOutputDirName(name);
+        setOutputDirName(uri);
         setSnackbar({
           open: true,
-          message: `Output folder set to: ${name}`,
+          message: `Output folder set to: ${uri}`,
           severity: "success",
         });
       }
@@ -222,9 +247,14 @@ function ReceivePage() {
             fullWidth
             placeholder="Select output folder"
             value={outputDirName || ""}
-            slotProps={{ input: { readOnly: true } }}
+            slotProps={{
+              input: {
+                readOnly: true,
+              },
+            }}
             disabled={isReceiving}
             size="small"
+            title={outputDirName || ""}
           />
           <Button
             variant="contained"

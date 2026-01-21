@@ -77,9 +77,9 @@ function SendPage() {
       const result = await invoke<[string, string] | null>("pick_file");
 
       if (result) {
-        const [uri, filename] = result;
+        const [uri, _filename] = result;
         setSelectedFile(uri);
-        setSelectedFileName(filename);
+        setSelectedFileName(uri);
       }
     } catch (error) {
       console.error("Failed to select file:", error);
@@ -96,9 +96,9 @@ function SendPage() {
       const result = await invoke<[string, string] | null>("pick_folder");
 
       if (result) {
-        const [uri, foldername] = result;
+        const [uri, _foldername] = result;
         setSelectedFile(uri);
-        setSelectedFileName(foldername);
+        setSelectedFileName(uri);
       }
     } catch (error) {
       console.error("Failed to select folder:", error);
@@ -238,9 +238,14 @@ function SendPage() {
             fullWidth
             placeholder="Select file or folder"
             value={selectedFileName}
-            slotProps={{ input: { readOnly: true } }}
+            slotProps={{
+              input: {
+                readOnly: true,
+              },
+            }}
             disabled={isSending}
             size="small"
+            title={selectedFileName}
           />
           <Button
             variant="contained"

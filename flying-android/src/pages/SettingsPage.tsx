@@ -10,10 +10,12 @@ import {
 } from "@mui/material";
 import { Folder as FolderIcon } from "@mui/icons-material";
 import { invoke } from "@tauri-apps/api/core";
+import { Store } from "@tauri-apps/plugin-store";
+import { downloadDir } from "@tauri-apps/api/path";
 
 function SettingsPage() {
   const [defaultFolder, setDefaultFolder] = useState<string>("");
-  const [defaultFolderName, setDefaultFolderName] = useState<string>("");
+  const [store, setStore] = useState<Store | null>(null);
   const [snackbar, setSnackbar] = useState({
     open: false,
     message: "",
@@ -21,35 +23,44 @@ function SettingsPage() {
   });
 
   useEffect(() => {
-    loadSettings();
+    const initStore = async () => {
+      const storeInstance = await Store.load("settings.json");
+      setStore(storeInstance);
+      await loadSettings(storeInstance);
+    };
+    initStore();
   }, []);
 
-  const loadSettings = async () => {
+  const loadSettings = async (storeInstance: Store) => {
     try {
-      const settings = await invoke<{
-        folder_uri: string;
-        folder_name: string;
-      }>("get_default_receive_folder");
-      setDefaultFolder(settings.folder_uri);
-      setDefaultFolderName(settings.folder_name);
+      let folderPath = await storeInstance.get<string>("default_folder_path");
+
+      // Initialize with Download folder if not set
+      if (!folderPath) {
+        folderPath = await downloadDir();
+
+        // Save to store
+        await storeInstance.set("default_folder_path", folderPath);
+        await storeInstance.save();
+      }
+
+      setDefaultFolder(folderPath);
     } catch (error) {
       console.error("Failed to load settings:", error);
     }
   };
 
   const handleSelectFolder = async () => {
+    if (!store) return;
+
     try {
       const result = await invoke<[string, string] | null>("pick_folder");
       if (result) {
-        const [uri, name] = result;
+        const [uri, _name] = result;
         setDefaultFolder(uri);
-        setDefaultFolderName(name);
 
-        // Save to settings
-        await invoke("set_default_receive_folder", {
-          folderUri: uri,
-          folderName: name,
-        });
+        await store.set("default_folder_path", uri);
+        await store.save();
 
         setSnackbar({
           open: true,
@@ -77,17 +88,19 @@ function SettingsPage() {
         <Typography variant="subtitle1" gutterBottom sx={{ fontWeight: 500 }}>
           Default Receive Folder
         </Typography>
-        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-          Files will be saved to this folder by default when receiving
-        </Typography>
 
         <Box sx={{ display: "flex", gap: 1, alignItems: "center" }}>
           <TextField
             fullWidth
             placeholder="Select default folder"
-            value={defaultFolderName}
-            slotProps={{ input: { readOnly: true } }}
+            value={defaultFolder}
+            slotProps={{
+              input: {
+                readOnly: true,
+              },
+            }}
             size="small"
+            title={defaultFolder}
           />
           <Button
             variant="contained"
