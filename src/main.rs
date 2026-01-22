@@ -108,7 +108,7 @@ async fn main() {
             let password = get_or_prompt_password(&connection_mode, password);
             print_session_info("SEND", &password, &connection_mode, None);
 
-            if let Err(e) = run_sender(&file, &password, connection_mode, persistent).await {
+            if let Err(e) = run_sender(&file, &password, connection_mode, persistent, None).await {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }
@@ -129,7 +129,7 @@ async fn main() {
             let password = get_or_prompt_password(&connection_mode, password);
             print_session_info("RECEIVE", &password, &connection_mode, Some(&output));
 
-            if let Err(e) = run_receiver(&output, &password, connection_mode).await {
+            if let Err(e) = run_receiver(&output, &password, connection_mode, None).await {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }

@@ -10,11 +10,10 @@ use std::{
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
+    sync::mpsc,
 };
 
-async fn receive_metadata(
-    stream: &mut TcpStream,
-) -> Result<(String, u64), Box<dyn std::error::Error>> {
+async fn receive_metadata(stream: &mut TcpStream) -> anyhow::Result<(String, u64)> {
     let filename_len = stream.read_u64().await? as usize;
     let mut filename_bytes = vec![0; filename_len];
     stream.read_exact(&mut filename_bytes).await?;
@@ -23,10 +22,7 @@ async fn receive_metadata(
     Ok((filename, file_size))
 }
 
-async fn check_duplicate(
-    stream: &mut TcpStream,
-    file: &fs::File,
-) -> Result<bool, Box<dyn std::error::Error>> {
+async fn check_duplicate(stream: &mut TcpStream, file: &fs::File) -> anyhow::Result<bool> {
     stream.write_u64(1).await?;
     let local_hash = utils::hash_file(file)?;
     let mut peer_hash = vec![0; 32];
@@ -41,8 +37,13 @@ async fn decrypt_and_save(
     file: &mut fs::File,
     size: u64,
     key: &aead::LessSafeKey,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mut progress = utils::ProgressTracker::new();
+    progress_tx: Option<mpsc::Sender<u8>>,
+) -> anyhow::Result<()> {
+    let mut progress = if let Some(tx) = progress_tx {
+        utils::ProgressTracker::with_channel(tx)
+    } else {
+        Default::default()
+    };
     let mut bytes_received = 0u64;
 
     loop {
@@ -55,17 +56,17 @@ async fn decrypt_and_save(
         stream.read_exact(&mut packet).await?;
 
         if packet.len() < aead::NONCE_LEN {
-            return Err("Invalid packet: too short".into());
+            anyhow::bail!("Invalid packet: too short");
         }
 
         let (nonce_bytes, ciphertext) = packet.split_at(aead::NONCE_LEN);
-        let nonce =
-            aead::Nonce::try_assume_unique_for_key(nonce_bytes).map_err(|_| "Invalid nonce")?;
+        let nonce = aead::Nonce::try_assume_unique_for_key(nonce_bytes)
+            .map_err(|_| anyhow::anyhow!("Invalid nonce"))?;
 
         let mut in_out = ciphertext.to_vec();
         let plaintext = key
             .open_in_place(nonce, aead::Aad::empty(), &mut in_out)
-            .map_err(|_| "Decryption failed")?;
+            .map_err(|_| anyhow::anyhow!("Decryption failed"))?;
 
         bytes_received += plaintext.len() as u64;
         file.write_all(plaintext)?;
@@ -81,7 +82,8 @@ pub async fn receive_file(
     output_dir: &Path,
     key: &aead::LessSafeKey,
     check_dup: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+    progress_tx: Option<mpsc::Sender<u8>>,
+) -> anyhow::Result<()> {
     let start = Instant::now();
 
     let (filename, file_size) = receive_metadata(stream).await?;
@@ -117,7 +119,7 @@ pub async fn receive_file(
     }
 
     let mut out_file = fs::File::create(&full_path)?;
-    decrypt_and_save(stream, &mut out_file, file_size, key).await?;
+    decrypt_and_save(stream, &mut out_file, file_size, key, progress_tx).await?;
 
     let elapsed = start.elapsed();
     println!(

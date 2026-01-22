@@ -7,6 +7,7 @@ use std::{
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
+    sync::mpsc,
 };
 
 const SPAKE2_MSG_SIZE: usize = 33;
@@ -45,13 +46,18 @@ pub fn hash_file(file: &fs::File) -> io::Result<digest::Digest> {
     Ok(context.finish())
 }
 
+#[derive(Default)]
 pub struct ProgressTracker {
     last_percent: u8,
+    progress_tx: Option<mpsc::Sender<u8>>,
 }
 
 impl ProgressTracker {
-    pub fn new() -> Self {
-        Self { last_percent: 0 }
+    pub fn with_channel(progress_tx: mpsc::Sender<u8>) -> Self {
+        Self {
+            progress_tx: Some(progress_tx),
+            ..Default::default()
+        }
     }
 
     pub fn update(&mut self, bytes_processed: u64, total_bytes: u64) -> io::Result<()> {
@@ -60,20 +66,27 @@ impl ProgressTracker {
             print!("\rProgress: {}%", percent_done);
             io::stdout().flush()?;
             self.last_percent = percent_done;
+
+            // Send progress through channel if available
+            if let Some(tx) = &self.progress_tx {
+                let _ = tx.try_send(percent_done);
+            }
         }
         Ok(())
     }
 
     pub fn finish(&self) -> io::Result<()> {
         println!("\rProgress: 100%");
+
+        if let Some(tx) = &self.progress_tx {
+            let _ = tx.try_send(100);
+        }
+
         Ok(())
     }
 }
 
-pub async fn version_handshake(
-    stream: &mut TcpStream,
-    version: u64,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn version_handshake(stream: &mut TcpStream, version: u64) -> anyhow::Result<()> {
     let (mut read_half, mut write_half) = stream.split();
 
     let (write_result, read_result) =
@@ -92,10 +105,7 @@ pub async fn version_handshake(
     Ok(())
 }
 
-pub async fn mode_handshake(
-    stream: &mut TcpStream,
-    is_receiver: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn mode_handshake(stream: &mut TcpStream, is_receiver: bool) -> anyhow::Result<()> {
     const MODE_SEND: u64 = 1;
     const MODE_RECEIVE: u64 = 0;
 
@@ -114,15 +124,14 @@ pub async fn mode_handshake(
     let peer_mode = read_result?;
 
     if peer_mode != expected_peer_mode {
-        return Err(format!(
+        anyhow::bail!(
             "Mode mismatch: both sides in {} mode",
             if peer_mode == MODE_SEND {
                 "send"
             } else {
                 "receive"
             }
-        )
-        .into());
+        );
     }
 
     Ok(())
@@ -132,7 +141,7 @@ pub async fn pake_handshake(
     stream: &mut TcpStream,
     password: &str,
     is_receiver: bool,
-) -> Result<[u8; 32], Box<dyn std::error::Error>> {
+) -> anyhow::Result<[u8; 32]> {
     let (state, outbound_msg) = if is_receiver {
         Spake2::<Ed25519Group>::start_b(
             &Password::new(password),
@@ -154,11 +163,11 @@ pub async fn pake_handshake(
 
     let shared_secret = state
         .finish(&inbound_msg)
-        .map_err(|_| "PAKE failed: incorrect password or protocol error")?;
+        .map_err(|_| anyhow::anyhow!("PAKE failed: incorrect password or protocol error"))?;
 
     let shared_secret: [u8; 32] = shared_secret
         .try_into()
-        .map_err(|_| "Invalid shared secret length")?;
+        .map_err(|_| anyhow::anyhow!("Invalid shared secret length"))?;
 
     // Derive encryption key using HKDF
     let salt = hkdf::Salt::new(hkdf::HKDF_SHA256, b"flying-v5");
@@ -167,17 +176,17 @@ pub async fn pake_handshake(
     let aead_info: &[&[u8]] = &[b"aead-key"];
     let mut aead_key = [0u8; 32];
     prk.expand(aead_info, MyKeyType(32))
-        .map_err(|_| "HKDF expand failed")?
+        .map_err(|_| anyhow::anyhow!("HKDF expand failed"))?
         .fill(&mut aead_key)
-        .map_err(|_| "HKDF key derivation failed")?;
+        .map_err(|_| anyhow::anyhow!("HKDF key derivation failed"))?;
 
     // Key confirmation using HMAC
     let hmac_info: &[&[u8]] = &[b"hmac-key"];
     let mut hmac_key_bytes = [0u8; 32];
     prk.expand(hmac_info, MyKeyType(32))
-        .map_err(|_| "HKDF expand failed")?
+        .map_err(|_| anyhow::anyhow!("HKDF expand failed"))?
         .fill(&mut hmac_key_bytes)
-        .map_err(|_| "HKDF key derivation failed")?;
+        .map_err(|_| anyhow::anyhow!("HKDF key derivation failed"))?;
 
     let hmac_key = hmac::Key::new(hmac::HMAC_SHA256, &hmac_key_bytes);
 
@@ -194,7 +203,7 @@ pub async fn pake_handshake(
     stream.read_exact(&mut peer_tag).await?;
 
     hmac::verify(&hmac_key, peer_role, &peer_tag)
-        .map_err(|_| "Key confirmation failed: password mismatch")?;
+        .map_err(|_| anyhow::anyhow!("Key confirmation failed: password mismatch"))?;
 
     Ok(aead_key)
 }
@@ -206,7 +215,7 @@ pub async fn send_handshake(
     num_files: u64,
     is_folder: bool,
     folder_name: Option<&str>,
-) -> Result<ring::aead::LessSafeKey, Box<dyn std::error::Error>> {
+) -> anyhow::Result<ring::aead::LessSafeKey> {
     version_handshake(stream, version).await?;
     mode_handshake(stream, false).await?;
     let key_bytes = pake_handshake(stream, password, false).await?;
@@ -220,7 +229,7 @@ pub async fn send_handshake(
     }
 
     let unbound_key = ring::aead::UnboundKey::new(&ring::aead::AES_256_GCM, &key_bytes)
-        .map_err(|_| "Failed to create encryption key")?;
+        .map_err(|_| anyhow::anyhow!("Failed to create encryption key"))?;
     Ok(ring::aead::LessSafeKey::new(unbound_key))
 }
 
@@ -228,7 +237,7 @@ pub async fn receive_handshake(
     stream: &mut TcpStream,
     version: u64,
     password: &str,
-) -> Result<(ring::aead::LessSafeKey, u64, bool, Option<String>), Box<dyn std::error::Error>> {
+) -> anyhow::Result<(ring::aead::LessSafeKey, u64, bool, Option<String>)> {
     version_handshake(stream, version).await?;
     mode_handshake(stream, true).await?;
     let key_bytes = pake_handshake(stream, password, true).await?;
@@ -246,13 +255,13 @@ pub async fn receive_handshake(
     };
 
     let unbound_key = ring::aead::UnboundKey::new(&ring::aead::AES_256_GCM, &key_bytes)
-        .map_err(|_| "Failed to create decryption key")?;
+        .map_err(|_| anyhow::anyhow!("Failed to create decryption key"))?;
     let key = ring::aead::LessSafeKey::new(unbound_key);
 
     Ok((key, num_files, is_folder, folder_name))
 }
 
-pub fn create_listener(port: u16) -> Result<tokio::net::TcpListener, Box<dyn std::error::Error>> {
+pub fn create_listener(port: u16) -> anyhow::Result<tokio::net::TcpListener> {
     use socket2::{Domain, Protocol, Socket, Type};
     use std::net::SocketAddr;
 

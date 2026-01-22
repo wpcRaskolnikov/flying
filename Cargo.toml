@@ -1,6 +1,6 @@
 [package]
 name = "flying"
-version = "5.0.0"
+version = "5.0.1"
 edition = "2024"
 description = "A simple, secure, and fast file transfer tool"
 authors = ["wpcRaskolnikov <22pcwang@stu.edu.cn>"]
@@ -22,6 +22,7 @@ license = false
 eula = false
 
 [dependencies]
+anyhow = "1.0.100"
 clap = { version = "4.5.53", features = ["derive"] }
 hostname = "0.4.2"
 humansize = "2.1.3"

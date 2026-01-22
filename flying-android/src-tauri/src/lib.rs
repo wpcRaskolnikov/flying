@@ -222,11 +222,22 @@ async fn send_file_from_uri(
                     .await
                     .map_err(|e| format!("Failed to open file: {}", e))?;
 
+                // Create progress channel (buffered to avoid blocking)
+                let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(32);
+                let window_clone = window.clone();
+
+                // Spawn task to listen for progress updates
+                tokio::spawn(async move {
+                    while let Some(percent) = progress_rx.recv().await {
+                        let _ = window_clone.emit("send-progress", percent);
+                    }
+                });
+
                 tokio::select! {
                     _ = abort_registration => {
                         Err("Transfer cancelled".to_string())
                     }
-                    result = flying::run_sender_from_handle(source_file, &file_name, &password, mode) => {
+                    result = flying::run_sender_from_handle(source_file, &file_name, &password, mode, Some(progress_tx)) => {
                         result.map_err(|e| format!("Send error: {}", e))
                     }
                 }
@@ -237,11 +248,22 @@ async fn send_file_from_uri(
             let result: Result<(), String> = async {
                 let file_path = std::path::PathBuf::from(&file_uri);
 
+                // Create progress channel (buffered to avoid blocking)
+                let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(32);
+                let window_clone = window.clone();
+
+                // Spawn task to listen for progress updates
+                tokio::spawn(async move {
+                    while let Some(percent) = progress_rx.recv().await {
+                        let _ = window_clone.emit("send-progress", percent);
+                    }
+                });
+
                 tokio::select! {
                     _ = abort_registration => {
                         Err("Transfer cancelled".to_string())
                     }
-                    result = flying::run_sender(&file_path, &password, mode, false) => {
+                    result = flying::run_sender(&file_path, &password, mode, false, Some(progress_tx)) => {
                         result.map_err(|e| format!("Send error: {}", e))
                     }
                 }
@@ -302,12 +324,23 @@ async fn receive_file(
                 // TODO: Implement proper Android content URI writing in flying crate
                 let download_dir = PathBuf::from("/storage/emulated/0/Download");
 
+                // Create progress channel (buffered to avoid blocking)
+                let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(32);
+                let window_clone = window.clone();
+
+                // Spawn task to listen for progress updates
+                tokio::spawn(async move {
+                    while let Some(percent) = progress_rx.recv().await {
+                        let _ = window_clone.emit("receive-progress", percent);
+                    }
+                });
+
                 // Check for cancellation or run transfer
                 tokio::select! {
                     _ = abort_registration => {
                         Err("Transfer cancelled".to_string())
                     }
-                    result = flying::run_receiver(&download_dir, &password, mode) => {
+                    result = flying::run_receiver(&download_dir, &password, mode, Some(progress_tx)) => {
                         result.map_err(|e| format!("Receive error: {}", e))
                     }
                 }
@@ -356,12 +389,23 @@ async fn receive_file(
         rt.block_on(async {
             let _ = window.emit("receive-start", serde_json::json!({}));
 
+            // Create progress channel (buffered to avoid blocking)
+            let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(32);
+            let window_clone = window.clone();
+
+            // Spawn task to listen for progress updates
+            tokio::spawn(async move {
+                while let Some(percent) = progress_rx.recv().await {
+                    let _ = window_clone.emit("receive-progress", percent);
+                }
+            });
+
             // Check for cancellation or run transfer
             let result = tokio::select! {
                 _ = abort_registration => {
                     Err("Transfer cancelled".to_string())
                 }
-                result = flying::run_receiver(&output_dir, &password, mode) => {
+                result = flying::run_receiver(&output_dir, &password, mode, Some(progress_tx)) => {
                     result.map_err(|e| format!("Receive error: {}", e))
                 }
             };

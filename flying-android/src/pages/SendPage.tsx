@@ -36,6 +36,7 @@ function SendPage() {
   const [connectIp, setConnectIp] = useState("");
   const [isSending, setIsSending] = useState(false);
   const [status, setStatus] = useState("");
+  const [progress, setProgress] = useState(0);
   const [snackbar, setSnackbar] = useState({
     open: false,
     message: "",
@@ -46,29 +47,41 @@ function SendPage() {
     const unlisten1 = listen("send-start", () => {
       setIsSending(true);
       setStatus("Sending file...");
+      setProgress(0);
     });
 
     const unlisten2 = listen("send-complete", () => {
       setIsSending(false);
       setStatus("Send completed!");
+      setProgress(100);
       setSnackbar({
         open: true,
         message: "File sent successfully",
         severity: "success",
       });
-      setTimeout(() => setStatus(""), 2000);
+      setTimeout(() => {
+        setStatus("");
+        setProgress(0);
+      }, 2000);
     });
 
     const unlisten3 = listen<string>("send-error", (event) => {
       setIsSending(false);
       setStatus("");
+      setProgress(0);
       setSnackbar({ open: true, message: event.payload, severity: "error" });
+    });
+
+    const unlisten4 = listen<number>("send-progress", (event) => {
+      setProgress(event.payload);
+      setStatus(`Sending file... ${event.payload}%`);
     });
 
     return () => {
       unlisten1.then((fn) => fn());
       unlisten2.then((fn) => fn());
       unlisten3.then((fn) => fn());
+      unlisten4.then((fn) => fn());
     };
   }, []);
 
@@ -208,6 +221,7 @@ function SendPage() {
       await invoke("cancel_send");
       setIsSending(false);
       setStatus("");
+      setProgress(0);
       setSnackbar({
         open: true,
         message: "Transfer cancelled",
@@ -340,7 +354,9 @@ function SendPage() {
           <Typography variant="body2" color="primary" sx={{ mb: 1 }}>
             {status}
           </Typography>
-          {isSending && <LinearProgress />}
+          {isSending && (
+            <LinearProgress variant="determinate" value={progress} />
+          )}
         </Box>
       )}
 

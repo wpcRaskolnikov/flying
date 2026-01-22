@@ -10,25 +10,19 @@ use std::{
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
+    sync::mpsc,
 };
 
 const CHUNK_SIZE: usize = 1_048_576; // 1 MiB
 
-async fn send_metadata(
-    stream: &mut TcpStream,
-    filename: &str,
-    size: u64,
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn send_metadata(stream: &mut TcpStream, filename: &str, size: u64) -> anyhow::Result<()> {
     stream.write_u64(filename.len() as u64).await?;
     stream.write_all(filename.as_bytes()).await?;
     stream.write_u64(size).await?;
     Ok(())
 }
 
-async fn check_duplicate(
-    stream: &mut TcpStream,
-    file: &File,
-) -> Result<bool, Box<dyn std::error::Error>> {
+async fn check_duplicate(stream: &mut TcpStream, file: &File) -> anyhow::Result<bool> {
     let has_file = stream.read_u64().await?;
     if has_file == 1 {
         let hash = utils::hash_file(file)?;
@@ -45,10 +39,15 @@ async fn encrypt_and_send(
     mut file: File,
     size: u64,
     key: &aead::LessSafeKey,
-) -> Result<(), Box<dyn std::error::Error>> {
+    progress_tx: Option<mpsc::Sender<u8>>,
+) -> anyhow::Result<()> {
     let rng = rand::SystemRandom::new();
     let mut buffer = vec![0u8; CHUNK_SIZE];
-    let mut progress = utils::ProgressTracker::new();
+    let mut progress = if let Some(tx) = progress_tx {
+        utils::ProgressTracker::with_channel(tx)
+    } else {
+        Default::default()
+    };
     let mut bytes_sent = 0u64;
 
     loop {
@@ -60,13 +59,13 @@ async fn encrypt_and_send(
         let plaintext = &buffer[..bytes_read];
         let mut in_out = plaintext.to_vec();
 
-        let nonce_bytes =
-            rand::generate::<[u8; aead::NONCE_LEN]>(&rng).map_err(|_| "RNG failure")?;
+        let nonce_bytes = rand::generate::<[u8; aead::NONCE_LEN]>(&rng)
+            .map_err(|_| anyhow::anyhow!("RNG failure"))?;
         let nonce_slice = nonce_bytes.expose();
         let nonce = aead::Nonce::assume_unique_for_key(nonce_slice);
 
         key.seal_in_place_append_tag(nonce, aead::Aad::empty(), &mut in_out)
-            .map_err(|_| "Encryption failed")?;
+            .map_err(|_| anyhow::anyhow!("Encryption failed"))?;
 
         // Send nonce + ciphertext
         let mut packet = nonce_slice.to_vec();
@@ -92,7 +91,8 @@ pub async fn send_file(
     size: u64,
     key: &aead::LessSafeKey,
     check_dup: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+    progress_tx: Option<mpsc::Sender<u8>>,
+) -> anyhow::Result<()> {
     let start = Instant::now();
 
     println!("Sending file: {}", filename);
@@ -105,7 +105,7 @@ pub async fn send_file(
         return Ok(());
     }
 
-    encrypt_and_send(stream, file, size, key).await?;
+    encrypt_and_send(stream, file, size, key, progress_tx).await?;
 
     let elapsed = start.elapsed();
     println!(
@@ -125,7 +125,8 @@ pub async fn send_from_path(
     base_path: &Path,
     key: &aead::LessSafeKey,
     check_dup: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+    progress_tx: Option<mpsc::Sender<u8>>,
+) -> anyhow::Result<()> {
     let metadata = file_path.metadata()?;
     let size = metadata.len();
 
@@ -140,5 +141,5 @@ pub async fn send_from_path(
     };
 
     let file = File::open(file_path)?;
-    send_file(stream, file, &filename, size, key, check_dup).await
+    send_file(stream, file, &filename, size, key, check_dup, progress_tx).await
 }

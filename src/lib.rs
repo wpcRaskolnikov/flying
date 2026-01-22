@@ -4,7 +4,7 @@ mod send;
 pub mod utils;
 
 use std::net::SocketAddr;
-use tokio::{io::AsyncWriteExt, net::TcpStream};
+use tokio::{io::AsyncWriteExt, net::TcpStream, sync::mpsc};
 
 pub const VERSION: u64 = 5;
 const DEFAULT_PORT: u16 = 3290;
@@ -66,9 +66,7 @@ fn select_service(services: &[mdns::DiscoveredService]) -> Option<&mdns::Discove
     }
 }
 
-async fn establish_connection(
-    mode: &ConnectionMode,
-) -> Result<TcpStream, Box<dyn std::error::Error>> {
+async fn establish_connection(mode: &ConnectionMode) -> anyhow::Result<TcpStream> {
     match mode {
         ConnectionMode::AutoDiscover => {
             println!("Searching for peers on the local network...\n");
@@ -81,7 +79,7 @@ async fn establish_connection(
                 println!("Connected!\n");
                 Ok(stream)
             } else {
-                Err("No peers found on the local network".into())
+                anyhow::bail!("No peers found on the local network")
             }
         }
         ConnectionMode::Listen => {
@@ -112,7 +110,8 @@ pub async fn run_receiver(
     output_dir: &std::path::PathBuf,
     password: &str,
     connection_mode: ConnectionMode,
-) -> Result<(), Box<dyn std::error::Error>> {
+    progress_tx: Option<mpsc::Sender<u8>>,
+) -> anyhow::Result<()> {
     let mut stream = establish_connection(&connection_mode).await?;
 
     let (key, num_files, is_folder, folder_name) =
@@ -121,7 +120,7 @@ pub async fn run_receiver(
     println!("Receiving {} file(s)...\n", num_files);
 
     let final_output_dir = if is_folder {
-        let folder_name = folder_name.ok_or("Folder name missing")?;
+        let folder_name = folder_name.ok_or_else(|| anyhow::anyhow!("Folder name missing"))?;
         let mut folder_path = output_dir.clone();
         folder_path.push(&folder_name);
         println!("Creating folder: {}\n", folder_name);
@@ -139,7 +138,14 @@ pub async fn run_receiver(
         println!("===========================================");
         println!("File {} of {}", i + 1, num_files);
         println!("===========================================");
-        receive::receive_file(&mut stream, &final_output_dir, &key, check_duplicate).await?;
+        receive::receive_file(
+            &mut stream,
+            &final_output_dir,
+            &key,
+            check_duplicate,
+            progress_tx.clone(),
+        )
+        .await?;
         println!();
     }
 
@@ -177,12 +183,13 @@ pub async fn run_sender(
     password: &str,
     connection_mode: ConnectionMode,
     persistent: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+    progress_tx: Option<mpsc::Sender<u8>>,
+) -> anyhow::Result<()> {
     let mut files = Vec::new();
     collect_files(file_path, &mut files)?;
 
     if files.is_empty() {
-        return Err("No files to send".into());
+        anyhow::bail!("No files to send");
     }
 
     let base_path = if file_path.is_dir() {
@@ -198,7 +205,7 @@ pub async fn run_sender(
     let folder_name = if is_folder {
         file_path
             .file_name()
-            .ok_or("Invalid folder name")?
+            .ok_or_else(|| anyhow::anyhow!("Invalid folder name"))?
             .to_string_lossy()
             .to_string()
     } else {
@@ -258,10 +265,18 @@ pub async fn run_sender(
                 println!("\n===========================================");
                 println!("File {} of {}", i + 1, files.len());
                 println!("===========================================");
-                send::send_from_path(&mut stream, file, &base_path, &key, check_duplicate).await?;
+                send::send_from_path(
+                    &mut stream,
+                    file,
+                    &base_path,
+                    &key,
+                    check_duplicate,
+                    progress_tx.clone(),
+                )
+                .await?;
             }
 
-            Ok::<(), Box<dyn std::error::Error>>(())
+            Ok::<(), anyhow::Error>(())
         }
         .await;
 
@@ -296,7 +311,8 @@ pub async fn run_sender_from_handle(
     filename: &str,
     password: &str,
     connection_mode: ConnectionMode,
-) -> Result<(), Box<dyn std::error::Error>> {
+    progress_tx: Option<mpsc::Sender<u8>>,
+) -> anyhow::Result<()> {
     let size = file.metadata()?.len();
     let mut stream = establish_connection(&connection_mode).await?;
 
@@ -306,9 +322,9 @@ pub async fn run_sender_from_handle(
         println!("\n===========================================");
         println!("File 1 of 1");
         println!("===========================================");
-        send::send_file(&mut stream, file, filename, size, &key, true).await?;
+        send::send_file(&mut stream, file, filename, size, &key, true, progress_tx).await?;
 
-        Ok::<(), Box<dyn std::error::Error>>(())
+        Ok::<(), anyhow::Error>(())
     }
     .await;
 

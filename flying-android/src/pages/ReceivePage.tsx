@@ -35,6 +35,7 @@ function ReceivePage() {
   const [connectIp, setConnectIp] = useState("");
   const [isReceiving, setIsReceiving] = useState(false);
   const [status, setStatus] = useState("");
+  const [progress, setProgress] = useState(0);
   const [outputDirUri, setOutputDirUri] = useState<string | null>(null);
   const [outputDirName, setOutputDirName] = useState<string | null>(null);
   const [snackbar, setSnackbar] = useState({
@@ -70,29 +71,41 @@ function ReceivePage() {
     const unlisten1 = listen("receive-start", () => {
       setIsReceiving(true);
       setStatus("Receiving file...");
+      setProgress(0);
     });
 
     const unlisten2 = listen("receive-complete", () => {
       setIsReceiving(false);
       setStatus("Receive completed!");
+      setProgress(100);
       setSnackbar({
         open: true,
         message: "File received successfully",
         severity: "success",
       });
-      setTimeout(() => setStatus(""), 2000);
+      setTimeout(() => {
+        setStatus("");
+        setProgress(0);
+      }, 2000);
     });
 
     const unlisten3 = listen<string>("receive-error", (event) => {
       setIsReceiving(false);
       setStatus("");
+      setProgress(0);
       setSnackbar({ open: true, message: event.payload, severity: "error" });
+    });
+
+    const unlisten4 = listen<number>("receive-progress", (event) => {
+      setProgress(event.payload);
+      setStatus(`Receiving file... ${event.payload}%`);
     });
 
     return () => {
       unlisten1.then((fn) => fn());
       unlisten2.then((fn) => fn());
       unlisten3.then((fn) => fn());
+      unlisten4.then((fn) => fn());
     };
   }, []);
 
@@ -216,6 +229,7 @@ function ReceivePage() {
       await invoke("cancel_receive");
       setIsReceiving(false);
       setStatus("");
+      setProgress(0);
       setSnackbar({
         open: true,
         message: "Transfer cancelled",
@@ -339,7 +353,9 @@ function ReceivePage() {
           <Typography variant="body2" color="primary" sx={{ mb: 1 }}>
             {status}
           </Typography>
-          {isReceiving && <LinearProgress />}
+          {isReceiving && (
+            <LinearProgress variant="determinate" value={progress} />
+          )}
         </Box>
       )}
 

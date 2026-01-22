@@ -10,7 +10,7 @@ pub struct DiscoveredService {
     pub port: u16,
 }
 
-pub fn advertise_service(port: u16) -> Result<ServiceDaemon, Box<dyn std::error::Error>> {
+pub fn advertise_service(port: u16) -> anyhow::Result<ServiceDaemon> {
     let mdns = ServiceDaemon::new()?;
 
     let hostname = hostname::get()?.to_string_lossy().to_string();
@@ -58,9 +58,7 @@ fn is_valid_ip(ip_addr: IpAddr) -> bool {
     !is_link_local
 }
 
-pub fn discover_services(
-    timeout_secs: u64,
-) -> Result<Vec<DiscoveredService>, Box<dyn std::error::Error>> {
+pub fn discover_services(timeout_secs: u64) -> anyhow::Result<Vec<DiscoveredService>> {
     let mdns = ServiceDaemon::new()?;
     let receiver = mdns.browse(SERVICE_TYPE)?;
 
