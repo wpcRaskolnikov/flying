@@ -1,13 +1,11 @@
 use ring::{digest, hkdf, hmac};
 use spake2::{Ed25519Group, Identity, Password, Spake2};
-use std::{
-    fs,
-    io::{self, Write},
-};
+use std::io::{self, Write};
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpStream,
-    sync::mpsc,
+    fs::File,
+    io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
+    net::{TcpListener, TcpStream},
+    sync::mpsc::Sender,
 };
 
 const SPAKE2_MSG_SIZE: usize = 33;
@@ -25,35 +23,32 @@ pub fn generate_password() -> String {
     petname::petname(3, "-").unwrap_or_else(|| "flying-transfer-secret".to_string())
 }
 
-pub fn hash_file(file: &fs::File) -> io::Result<digest::Digest> {
-    use std::io::{Read, Seek, SeekFrom};
-
-    let mut file_ref = file;
-    file_ref.seek(SeekFrom::Start(0))?;
+pub async fn hash_file(file: &mut File) -> io::Result<digest::Digest> {
+    file.seek(std::io::SeekFrom::Start(0)).await?;
 
     let mut context = digest::Context::new(&digest::SHA256);
     let mut buffer = vec![0u8; 1_048_576];
 
     loop {
-        let bytes_read = file_ref.read(&mut buffer)?;
+        let bytes_read = file.read(&mut buffer).await?;
         if bytes_read == 0 {
             break;
         }
         context.update(&buffer[..bytes_read]);
     }
 
-    file_ref.seek(SeekFrom::Start(0))?;
+    file.seek(std::io::SeekFrom::Start(0)).await?;
     Ok(context.finish())
 }
 
 #[derive(Default)]
 pub struct ProgressTracker {
     last_percent: u8,
-    progress_tx: Option<mpsc::Sender<u8>>,
+    progress_tx: Option<Sender<u8>>,
 }
 
 impl ProgressTracker {
-    pub fn with_channel(progress_tx: mpsc::Sender<u8>) -> Self {
+    pub fn with_channel(progress_tx: Sender<u8>) -> Self {
         Self {
             progress_tx: Some(progress_tx),
             ..Default::default()
@@ -261,7 +256,7 @@ pub async fn receive_handshake(
     Ok((key, num_files, is_folder, folder_name))
 }
 
-pub fn create_listener(port: u16) -> anyhow::Result<tokio::net::TcpListener> {
+pub fn create_listener(port: u16) -> anyhow::Result<TcpListener> {
     use socket2::{Domain, Protocol, Socket, Type};
     use std::net::SocketAddr;
 

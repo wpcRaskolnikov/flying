@@ -2,15 +2,14 @@ use crate::utils;
 use humansize::{BINARY, format_size};
 use ring::{aead, rand};
 use std::{
-    fs::File,
-    io::Read,
     path::Path,
     time::{Duration, Instant},
 };
 use tokio::{
+    fs::File,
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
-    sync::mpsc,
+    sync::mpsc::Sender,
 };
 
 const CHUNK_SIZE: usize = 1_048_576; // 1 MiB
@@ -22,10 +21,10 @@ async fn send_metadata(stream: &mut TcpStream, filename: &str, size: u64) -> any
     Ok(())
 }
 
-async fn check_duplicate(stream: &mut TcpStream, file: &File) -> anyhow::Result<bool> {
+async fn check_duplicate(stream: &mut TcpStream, file: &mut File) -> anyhow::Result<bool> {
     let has_file = stream.read_u64().await?;
     if has_file == 1 {
-        let hash = utils::hash_file(file)?;
+        let hash = utils::hash_file(file).await?;
         stream.write_all(hash.as_ref()).await?;
         let match_flag = stream.read_u64().await?;
         Ok(match_flag == 0) // need transfer if hashes don't match
@@ -39,7 +38,7 @@ async fn encrypt_and_send(
     mut file: File,
     size: u64,
     key: &aead::LessSafeKey,
-    progress_tx: Option<mpsc::Sender<u8>>,
+    progress_tx: Option<Sender<u8>>,
 ) -> anyhow::Result<()> {
     let rng = rand::SystemRandom::new();
     let mut buffer = vec![0u8; CHUNK_SIZE];
@@ -51,7 +50,7 @@ async fn encrypt_and_send(
     let mut bytes_sent = 0u64;
 
     loop {
-        let bytes_read = file.read(&mut buffer)?;
+        let bytes_read = file.read(&mut buffer).await?;
         if bytes_read == 0 {
             break;
         }
@@ -86,12 +85,12 @@ async fn encrypt_and_send(
 
 pub async fn send_file(
     stream: &mut TcpStream,
-    file: File,
+    mut file: File,
     filename: &str,
     size: u64,
     key: &aead::LessSafeKey,
     check_dup: bool,
-    progress_tx: Option<mpsc::Sender<u8>>,
+    progress_tx: Option<Sender<u8>>,
 ) -> anyhow::Result<()> {
     let start = Instant::now();
 
@@ -100,7 +99,7 @@ pub async fn send_file(
 
     send_metadata(stream, filename, size).await?;
 
-    if check_dup && !check_duplicate(stream, &file).await? {
+    if check_dup && !check_duplicate(stream, &mut file).await? {
         println!("Recipient already has this file, skipping.");
         return Ok(());
     }
@@ -125,9 +124,9 @@ pub async fn send_from_path(
     base_path: &Path,
     key: &aead::LessSafeKey,
     check_dup: bool,
-    progress_tx: Option<mpsc::Sender<u8>>,
+    progress_tx: Option<Sender<u8>>,
 ) -> anyhow::Result<()> {
-    let metadata = file_path.metadata()?;
+    let metadata = tokio::fs::metadata(file_path).await?;
     let size = metadata.len();
 
     let filename = if base_path.as_os_str().is_empty() {
@@ -140,6 +139,6 @@ pub async fn send_from_path(
             .to_string()
     };
 
-    let file = File::open(file_path)?;
+    let file = File::open(file_path).await?;
     send_file(stream, file, &filename, size, key, check_dup, progress_tx).await
 }

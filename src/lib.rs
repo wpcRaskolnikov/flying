@@ -2,12 +2,11 @@ pub mod mdns;
 mod receive;
 mod send;
 pub mod utils;
-
-use std::net::SocketAddr;
-use tokio::{io::AsyncWriteExt, net::TcpStream, sync::mpsc};
-
+use mdns_sd::ServiceDaemon;
+use std::net::{IpAddr, SocketAddr};
+use std::path::{Path, PathBuf};
+use tokio::{io::AsyncWriteExt, net::TcpStream, sync::mpsc::Sender};
 pub const VERSION: u64 = 5;
-const DEFAULT_PORT: u16 = 3290;
 
 #[derive(Debug, Clone)]
 pub enum ConnectionMode {
@@ -66,7 +65,10 @@ fn select_service(services: &[mdns::DiscoveredService]) -> Option<&mdns::Discove
     }
 }
 
-async fn establish_connection(mode: &ConnectionMode) -> anyhow::Result<TcpStream> {
+async fn establish_connection(
+    mode: &ConnectionMode,
+    port: u16,
+) -> anyhow::Result<(TcpStream, Option<ServiceDaemon>)> {
     match mode {
         ConnectionMode::AutoDiscover => {
             println!("Searching for peers on the local network...\n");
@@ -77,42 +79,40 @@ async fn establish_connection(mode: &ConnectionMode) -> anyhow::Result<TcpStream
                 println!("\nConnecting to {}...", addr);
                 let stream = TcpStream::connect(addr).await?;
                 println!("Connected!\n");
-                Ok(stream)
+                Ok((stream, None))
             } else {
                 anyhow::bail!("No peers found on the local network")
             }
         }
         ConnectionMode::Listen => {
-            let listener = utils::create_listener(DEFAULT_PORT)?;
-            let _mdns = mdns::advertise_service(DEFAULT_PORT)?;
+            let listener = utils::create_listener(port)?;
+            let mdns = mdns::advertise_service(port)?;
 
-            println!(
-                "Listening on [::]:{} (IPv4/IPv6 dual-stack)...",
-                DEFAULT_PORT
-            );
+            println!("Listening on [::]:{} (IPv4/IPv6 dual-stack)...", port);
             println!("Waiting for peer to connect...\n");
             let (stream, socket_addr) = listener.accept().await?;
             println!("Connection accepted from {}\n", socket_addr);
-            Ok(stream)
+            Ok((stream, Some(mdns)))
         }
         ConnectionMode::Connect(ip) => {
-            let ip: std::net::IpAddr = ip.parse()?;
-            let addr = std::net::SocketAddr::new(ip, DEFAULT_PORT);
+            let ip: IpAddr = ip.parse()?;
+            let addr = SocketAddr::new(ip, port);
             println!("Connecting to {}...", addr);
             let stream = TcpStream::connect(addr).await?;
             println!("Connected!\n");
-            Ok(stream)
+            Ok((stream, None))
         }
     }
 }
 
 pub async fn run_receiver(
-    output_dir: &std::path::PathBuf,
+    output_dir: &PathBuf,
     password: &str,
     connection_mode: ConnectionMode,
-    progress_tx: Option<mpsc::Sender<u8>>,
+    port: u16,
+    progress_tx: Option<Sender<u8>>,
 ) -> anyhow::Result<()> {
-    let mut stream = establish_connection(&connection_mode).await?;
+    let (mut stream, _mdns) = establish_connection(&connection_mode, port).await?;
 
     let (key, num_files, is_folder, folder_name) =
         utils::receive_handshake(&mut stream, VERSION, password).await?;
@@ -125,7 +125,7 @@ pub async fn run_receiver(
         folder_path.push(&folder_name);
         println!("Creating folder: {}\n", folder_name);
         if !folder_path.exists() {
-            std::fs::create_dir_all(&folder_path)?;
+            tokio::fs::create_dir_all(&folder_path).await?;
         }
         folder_path
     } else {
@@ -154,23 +154,25 @@ pub async fn run_receiver(
     println!("===========================================");
 
     stream.shutdown().await?;
+    if let Some(mdns) = _mdns {
+        let _ = mdns.shutdown();
+    }
     Ok(())
 }
 
-fn collect_files(
-    dir: &std::path::Path,
-    files: &mut Vec<std::path::PathBuf>,
-) -> std::io::Result<()> {
-    if dir.is_file() {
+async fn collect_files(dir: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
+    let metadata = tokio::fs::metadata(dir).await?;
+    if metadata.is_file() {
         files.push(dir.to_path_buf());
         return Ok(());
     }
 
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
+    let mut entries = tokio::fs::read_dir(dir).await?;
+    while let Some(entry) = entries.next_entry().await? {
         let path = entry.path();
-        if path.is_dir() {
-            collect_files(&path, files)?;
+        let metadata = tokio::fs::metadata(&path).await?;
+        if metadata.is_dir() {
+            Box::pin(collect_files(&path, files)).await?;
         } else {
             files.push(path);
         }
@@ -179,14 +181,15 @@ fn collect_files(
 }
 
 pub async fn run_sender(
-    file_path: &std::path::PathBuf,
+    file_path: &PathBuf,
     password: &str,
     connection_mode: ConnectionMode,
     persistent: bool,
-    progress_tx: Option<mpsc::Sender<u8>>,
+    port: u16,
+    progress_tx: Option<Sender<u8>>,
 ) -> anyhow::Result<()> {
     let mut files = Vec::new();
-    collect_files(file_path, &mut files)?;
+    collect_files(file_path, &mut files).await?;
 
     if files.is_empty() {
         anyhow::bail!("No files to send");
@@ -195,10 +198,7 @@ pub async fn run_sender(
     let base_path = if file_path.is_dir() {
         file_path.clone()
     } else {
-        file_path
-            .parent()
-            .unwrap_or(std::path::Path::new(""))
-            .to_path_buf()
+        file_path.parent().unwrap_or(Path::new("")).to_path_buf()
     };
 
     let is_folder = file_path.is_dir();
@@ -212,12 +212,13 @@ pub async fn run_sender(
         String::new()
     };
 
-    let listener = if persistent && matches!(connection_mode, ConnectionMode::Listen) {
-        let l = utils::create_listener(DEFAULT_PORT)?;
-        mdns::advertise_service(DEFAULT_PORT)?;
-        Some(l)
+    let (listener, mdns_handle) = if persistent && matches!(connection_mode, ConnectionMode::Listen)
+    {
+        let l = utils::create_listener(port)?;
+        let mdns = mdns::advertise_service(port)?;
+        (Some(l), Some(mdns))
     } else {
-        None
+        (None, None)
     };
 
     let mut transfer_count = 0u32;
@@ -230,17 +231,14 @@ pub async fn run_sender(
             println!("===========================================");
         }
 
-        let mut stream = if let Some(ref listener) = listener {
-            println!(
-                "Listening on [::]:{} (IPv4/IPv6 dual-stack)...",
-                DEFAULT_PORT
-            );
+        let (mut stream, mdns_from_connection) = if let Some(ref listener) = listener {
+            println!("Listening on [::]:{} (IPv4/IPv6 dual-stack)...", port);
             println!("Waiting for peer to connect...\n");
             let (stream, socket_addr) = listener.accept().await?;
             println!("Connection accepted from {}\n", socket_addr);
-            stream
+            (stream, None)
         } else {
-            establish_connection(&connection_mode).await?
+            establish_connection(&connection_mode, port).await?
         };
 
         let transfer_result = async {
@@ -297,12 +295,20 @@ pub async fn run_sender(
 
         let _ = stream.shutdown().await;
 
+        // Drop mDNS from connection if not persistent
         if !persistent {
+            if let Some(mdns) = mdns_from_connection {
+                let _ = mdns.shutdown();
+            }
             break;
         }
         println!("\nWaiting for next connection...");
     }
 
+    // Shutdown mDNS handle for persistent mode when loop ends
+    if let Some(mdns) = mdns_handle {
+        let _ = mdns.shutdown();
+    }
     Ok(())
 }
 
@@ -311,10 +317,12 @@ pub async fn run_sender_from_handle(
     filename: &str,
     password: &str,
     connection_mode: ConnectionMode,
-    progress_tx: Option<mpsc::Sender<u8>>,
+    port: u16,
+    progress_tx: Option<Sender<u8>>,
 ) -> anyhow::Result<()> {
     let size = file.metadata()?.len();
-    let mut stream = establish_connection(&connection_mode).await?;
+    let tokio_file = tokio::fs::File::from_std(file);
+    let (mut stream, _mdns) = establish_connection(&connection_mode, port).await?;
 
     let transfer_result = async {
         let key = utils::send_handshake(&mut stream, VERSION, password, 1, false, None).await?;
@@ -322,7 +330,16 @@ pub async fn run_sender_from_handle(
         println!("\n===========================================");
         println!("File 1 of 1");
         println!("===========================================");
-        send::send_file(&mut stream, file, filename, size, &key, true, progress_tx).await?;
+        send::send_file(
+            &mut stream,
+            tokio_file,
+            filename,
+            size,
+            &key,
+            true,
+            progress_tx,
+        )
+        .await?;
 
         Ok::<(), anyhow::Error>(())
     }
@@ -341,5 +358,8 @@ pub async fn run_sender_from_handle(
     }
 
     stream.shutdown().await?;
+    if let Some(mdns) = _mdns {
+        let _ = mdns.shutdown();
+    }
     Ok(())
 }

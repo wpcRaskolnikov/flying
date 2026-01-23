@@ -22,6 +22,8 @@ enum Commands {
         recursive: bool,
         #[arg(short = 'P', long)]
         persistent: bool,
+        #[arg(short, long, default_value = "3290")]
+        port: u16,
         password: Option<String>,
     },
 
@@ -30,6 +32,8 @@ enum Commands {
         listen: bool,
         #[arg(short, long, value_name = "IP")]
         connect: Option<String>,
+        #[arg(short, long, default_value = "3290")]
+        port: u16,
         password: Option<String>,
         #[arg(short, long, default_value = ".")]
         output: PathBuf,
@@ -87,6 +91,7 @@ async fn main() {
             connect,
             recursive,
             persistent,
+            port,
             password,
         } => {
             if !file.exists() {
@@ -108,7 +113,9 @@ async fn main() {
             let password = get_or_prompt_password(&connection_mode, password);
             print_session_info("SEND", &password, &connection_mode, None);
 
-            if let Err(e) = run_sender(&file, &password, connection_mode, persistent, None).await {
+            if let Err(e) =
+                run_sender(&file, &password, connection_mode, persistent, port, None).await
+            {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }
@@ -117,6 +124,7 @@ async fn main() {
         Commands::Receive {
             listen,
             connect,
+            port,
             password,
             output,
         } => {
@@ -129,7 +137,7 @@ async fn main() {
             let password = get_or_prompt_password(&connection_mode, password);
             print_session_info("RECEIVE", &password, &connection_mode, Some(&output));
 
-            if let Err(e) = run_receiver(&output, &password, connection_mode, None).await {
+            if let Err(e) = run_receiver(&output, &password, connection_mode, port, None).await {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }

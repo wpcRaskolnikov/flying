@@ -2,15 +2,14 @@ use crate::utils;
 use humansize::{BINARY, format_size};
 use ring::aead;
 use std::{
-    fs,
-    io::Write,
     path::Path,
     time::{Duration, Instant},
 };
 use tokio::{
+    fs::{self, File},
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
-    sync::mpsc,
+    sync::mpsc::Sender,
 };
 
 async fn receive_metadata(stream: &mut TcpStream) -> anyhow::Result<(String, u64)> {
@@ -22,9 +21,9 @@ async fn receive_metadata(stream: &mut TcpStream) -> anyhow::Result<(String, u64
     Ok((filename, file_size))
 }
 
-async fn check_duplicate(stream: &mut TcpStream, file: &fs::File) -> anyhow::Result<bool> {
+async fn check_duplicate(stream: &mut TcpStream, file: &mut File) -> anyhow::Result<bool> {
     stream.write_u64(1).await?;
-    let local_hash = utils::hash_file(file)?;
+    let local_hash = utils::hash_file(file).await?;
     let mut peer_hash = vec![0; 32];
     stream.read_exact(&mut peer_hash).await?;
     let matches = local_hash.as_ref() == peer_hash.as_slice();
@@ -34,10 +33,10 @@ async fn check_duplicate(stream: &mut TcpStream, file: &fs::File) -> anyhow::Res
 
 async fn decrypt_and_save(
     stream: &mut TcpStream,
-    file: &mut fs::File,
+    file: &mut File,
     size: u64,
     key: &aead::LessSafeKey,
-    progress_tx: Option<mpsc::Sender<u8>>,
+    progress_tx: Option<Sender<u8>>,
 ) -> anyhow::Result<()> {
     let mut progress = if let Some(tx) = progress_tx {
         utils::ProgressTracker::with_channel(tx)
@@ -69,7 +68,7 @@ async fn decrypt_and_save(
             .map_err(|_| anyhow::anyhow!("Decryption failed"))?;
 
         bytes_received += plaintext.len() as u64;
-        file.write_all(plaintext)?;
+        file.write_all(plaintext).await?;
         progress.update(bytes_received, size)?;
     }
 
@@ -82,7 +81,7 @@ pub async fn receive_file(
     output_dir: &Path,
     key: &aead::LessSafeKey,
     check_dup: bool,
-    progress_tx: Option<mpsc::Sender<u8>>,
+    progress_tx: Option<Sender<u8>>,
 ) -> anyhow::Result<()> {
     let start = Instant::now();
 
@@ -93,24 +92,38 @@ pub async fn receive_file(
     let mut full_path = output_dir.to_path_buf();
     full_path.push(&filename);
 
-    if check_dup && full_path.is_file() && full_path.metadata()?.len() == file_size {
-        let file = fs::File::open(&full_path)?;
-        if !check_duplicate(stream, &file).await? {
-            println!("Already have this file, skipping.");
-            return Ok(());
+    if check_dup {
+        if let Ok(metadata) = tokio::fs::metadata(&full_path).await {
+            if metadata.is_file() && metadata.len() == file_size {
+                let mut file = File::open(&full_path).await?;
+                if !check_duplicate(stream, &mut file).await? {
+                    println!("Already have this file, skipping.");
+                    return Ok(());
+                }
+            }
         }
-    } else if check_dup {
+    }
+
+    if !check_dup {
+        // Only send the "no file" signal if we're not checking duplicates
+    } else if tokio::fs::metadata(&full_path).await.is_err()
+        || tokio::fs::metadata(&full_path).await?.len() != file_size
+    {
         stream.write_u64(0).await?;
     }
 
     // Create parent directories
     if let Some(parent) = full_path.parent() {
-        fs::create_dir_all(parent)?;
+        fs::create_dir_all(parent).await?;
     }
 
     // Handle filename conflicts
     let mut counter = 1;
-    while full_path.is_file() {
+    while tokio::fs::metadata(&full_path)
+        .await
+        .map(|m| m.is_file())
+        .unwrap_or(false)
+    {
         let file_name = full_path.file_name().unwrap().to_str().unwrap();
         let new_name = format!("({}) {}", counter, file_name);
         full_path.pop();
@@ -118,7 +131,7 @@ pub async fn receive_file(
         counter += 1;
     }
 
-    let mut out_file = fs::File::create(&full_path)?;
+    let mut out_file = File::create(&full_path).await?;
     decrypt_and_save(stream, &mut out_file, file_size, key, progress_tx).await?;
 
     let elapsed = start.elapsed();
