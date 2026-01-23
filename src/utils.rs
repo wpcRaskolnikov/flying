@@ -1,15 +1,21 @@
 use ring::{digest, hkdf, hmac};
+use socket2::{Domain, Protocol, Socket, Type};
 use spake2::{Ed25519Group, Identity, Password, Spake2};
 use std::io::{self, Write};
+use std::net::SocketAddr;
 use tokio::{
     fs::File,
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     sync::mpsc::Sender,
 };
-
+const CHUNK_SIZE: usize = 1_048_576;
 const SPAKE2_MSG_SIZE: usize = 33;
 const HMAC_TAG_SIZE: usize = 32;
+const KEY_SIZE: usize = 32;
+const SHARED_SECRET_SIZE: usize = 32;
+const MODE_RECEIVE: u64 = 0;
+const MODE_SEND: u64 = 1;
 
 struct MyKeyType(usize);
 
@@ -27,7 +33,7 @@ pub async fn hash_file(file: &mut File) -> io::Result<digest::Digest> {
     file.seek(std::io::SeekFrom::Start(0)).await?;
 
     let mut context = digest::Context::new(&digest::SHA256);
-    let mut buffer = vec![0u8; 1_048_576];
+    let mut buffer = vec![0u8; CHUNK_SIZE];
 
     loop {
         let bytes_read = file.read(&mut buffer).await?;
@@ -84,11 +90,7 @@ impl ProgressTracker {
 pub async fn version_handshake(stream: &mut TcpStream, version: u64) -> anyhow::Result<()> {
     let (mut read_half, mut write_half) = stream.split();
 
-    let (write_result, read_result) =
-        tokio::join!(write_half.write_u64(version), read_half.read_u64());
-
-    write_result?;
-    let peer_version = read_result?;
+    let (_, peer_version) = tokio::try_join!(write_half.write_u64(version), read_half.read_u64())?;
 
     if peer_version != version {
         println!(
@@ -100,33 +102,13 @@ pub async fn version_handshake(stream: &mut TcpStream, version: u64) -> anyhow::
     Ok(())
 }
 
-pub async fn mode_handshake(stream: &mut TcpStream, is_receiver: bool) -> anyhow::Result<()> {
-    const MODE_SEND: u64 = 1;
-    const MODE_RECEIVE: u64 = 0;
-
-    let (our_mode, expected_peer_mode) = if is_receiver {
-        (MODE_RECEIVE, MODE_SEND)
-    } else {
-        (MODE_SEND, MODE_RECEIVE)
-    };
-
+pub async fn mode_handshake(stream: &mut TcpStream, mode: u64) -> anyhow::Result<()> {
     let (mut read_half, mut write_half) = stream.split();
 
-    let (write_result, read_result) =
-        tokio::join!(write_half.write_u64(our_mode), read_half.read_u64());
+    let (_, peer_mode) = tokio::try_join!(write_half.write_u64(mode), read_half.read_u64())?;
 
-    write_result?;
-    let peer_mode = read_result?;
-
-    if peer_mode != expected_peer_mode {
-        anyhow::bail!(
-            "Mode mismatch: both sides in {} mode",
-            if peer_mode == MODE_SEND {
-                "send"
-            } else {
-                "receive"
-            }
-        );
+    if peer_mode == mode {
+        anyhow::bail!("Mode mismatch: both sides in same mode");
     }
 
     Ok(())
@@ -136,7 +118,7 @@ pub async fn pake_handshake(
     stream: &mut TcpStream,
     password: &str,
     is_receiver: bool,
-) -> anyhow::Result<[u8; 32]> {
+) -> anyhow::Result<[u8; SHARED_SECRET_SIZE]> {
     let (state, outbound_msg) = if is_receiver {
         Spake2::<Ed25519Group>::start_b(
             &Password::new(password),
@@ -151,16 +133,17 @@ pub async fn pake_handshake(
         )
     };
 
-    stream.write_all(&outbound_msg).await?;
-
+    let (mut read_half, mut write_half) = stream.split();
     let mut inbound_msg = vec![0u8; SPAKE2_MSG_SIZE];
-    stream.read_exact(&mut inbound_msg).await?;
 
-    let shared_secret = state
+    tokio::try_join!(
+        write_half.write_all(&outbound_msg),
+        read_half.read_exact(&mut inbound_msg)
+    )?;
+
+    let shared_secret: [u8; SHARED_SECRET_SIZE] = state
         .finish(&inbound_msg)
-        .map_err(|_| anyhow::anyhow!("PAKE failed: incorrect password or protocol error"))?;
-
-    let shared_secret: [u8; 32] = shared_secret
+        .map_err(|_| anyhow::anyhow!("PAKE failed: incorrect password or protocol error"))?
         .try_into()
         .map_err(|_| anyhow::anyhow!("Invalid shared secret length"))?;
 
@@ -169,16 +152,16 @@ pub async fn pake_handshake(
     let prk = salt.extract(&shared_secret);
 
     let aead_info: &[&[u8]] = &[b"aead-key"];
-    let mut aead_key = [0u8; 32];
-    prk.expand(aead_info, MyKeyType(32))
+    let mut aead_key = [0u8; KEY_SIZE];
+    prk.expand(aead_info, MyKeyType(KEY_SIZE))
         .map_err(|_| anyhow::anyhow!("HKDF expand failed"))?
         .fill(&mut aead_key)
         .map_err(|_| anyhow::anyhow!("HKDF key derivation failed"))?;
 
     // Key confirmation using HMAC
     let hmac_info: &[&[u8]] = &[b"hmac-key"];
-    let mut hmac_key_bytes = [0u8; 32];
-    prk.expand(hmac_info, MyKeyType(32))
+    let mut hmac_key_bytes = [0u8; KEY_SIZE];
+    prk.expand(hmac_info, MyKeyType(KEY_SIZE))
         .map_err(|_| anyhow::anyhow!("HKDF expand failed"))?
         .fill(&mut hmac_key_bytes)
         .map_err(|_| anyhow::anyhow!("HKDF key derivation failed"))?;
@@ -192,10 +175,11 @@ pub async fn pake_handshake(
     };
 
     let our_tag = hmac::sign(&hmac_key, our_role);
-    stream.write_all(our_tag.as_ref()).await?;
-
     let mut peer_tag = vec![0u8; HMAC_TAG_SIZE];
-    stream.read_exact(&mut peer_tag).await?;
+    tokio::try_join!(
+        write_half.write_all(our_tag.as_ref()),
+        read_half.read_exact(&mut peer_tag)
+    )?;
 
     hmac::verify(&hmac_key, peer_role, &peer_tag)
         .map_err(|_| anyhow::anyhow!("Key confirmation failed: password mismatch"))?;
@@ -212,7 +196,7 @@ pub async fn send_handshake(
     folder_name: Option<&str>,
 ) -> anyhow::Result<ring::aead::LessSafeKey> {
     version_handshake(stream, version).await?;
-    mode_handshake(stream, false).await?;
+    mode_handshake(stream, MODE_SEND).await?;
     let key_bytes = pake_handshake(stream, password, false).await?;
 
     stream.write_u64(num_files).await?;
@@ -234,7 +218,7 @@ pub async fn receive_handshake(
     password: &str,
 ) -> anyhow::Result<(ring::aead::LessSafeKey, u64, bool, Option<String>)> {
     version_handshake(stream, version).await?;
-    mode_handshake(stream, true).await?;
+    mode_handshake(stream, MODE_RECEIVE).await?;
     let key_bytes = pake_handshake(stream, password, true).await?;
 
     let num_files = stream.read_u64().await?;
@@ -257,9 +241,6 @@ pub async fn receive_handshake(
 }
 
 pub fn create_listener(port: u16) -> anyhow::Result<TcpListener> {
-    use socket2::{Domain, Protocol, Socket, Type};
-    use std::net::SocketAddr;
-
     let addr = format!("[::]:{}", port).parse::<SocketAddr>()?;
 
     let socket = Socket::new(Domain::IPV6, Type::STREAM, Some(Protocol::TCP))?;

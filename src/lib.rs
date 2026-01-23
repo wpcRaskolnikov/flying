@@ -106,7 +106,7 @@ async fn establish_connection(
 }
 
 pub async fn run_receiver(
-    output_dir: &PathBuf,
+    output_dir: &Path,
     password: &str,
     connection_mode: ConnectionMode,
     port: u16,
@@ -119,17 +119,17 @@ pub async fn run_receiver(
 
     println!("Receiving {} file(s)...\n", num_files);
 
+    let folder_path;
     let final_output_dir = if is_folder {
         let folder_name = folder_name.ok_or_else(|| anyhow::anyhow!("Folder name missing"))?;
-        let mut folder_path = output_dir.clone();
-        folder_path.push(&folder_name);
+        folder_path = output_dir.join(&folder_name);
         println!("Creating folder: {}\n", folder_name);
         if !folder_path.exists() {
             tokio::fs::create_dir_all(&folder_path).await?;
         }
-        folder_path
+        folder_path.as_path()
     } else {
-        output_dir.clone()
+        output_dir
     };
 
     let check_duplicate = num_files == 1;
@@ -140,7 +140,7 @@ pub async fn run_receiver(
         println!("===========================================");
         receive::receive_file(
             &mut stream,
-            &final_output_dir,
+            final_output_dir,
             &key,
             check_duplicate,
             progress_tx.clone(),
@@ -160,45 +160,47 @@ pub async fn run_receiver(
     Ok(())
 }
 
-async fn collect_files(dir: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
+async fn collect_files(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
     let metadata = tokio::fs::metadata(dir).await?;
     if metadata.is_file() {
-        files.push(dir.to_path_buf());
-        return Ok(());
+        return Ok(vec![dir.to_path_buf()]);
     }
 
+    let mut files = Vec::new();
     let mut entries = tokio::fs::read_dir(dir).await?;
     while let Some(entry) = entries.next_entry().await? {
         let path = entry.path();
         let metadata = tokio::fs::metadata(&path).await?;
         if metadata.is_dir() {
-            Box::pin(collect_files(&path, files)).await?;
+            let mut sub_files = Box::pin(collect_files(&path)).await?;
+            files.append(&mut sub_files);
         } else {
             files.push(path);
         }
     }
-    Ok(())
+    Ok(files)
 }
 
 pub async fn run_sender(
-    file_path: &PathBuf,
+    file_path: &Path,
     password: &str,
     connection_mode: ConnectionMode,
     persistent: bool,
     port: u16,
     progress_tx: Option<Sender<u8>>,
 ) -> anyhow::Result<()> {
-    let mut files = Vec::new();
-    collect_files(file_path, &mut files).await?;
+    let files = collect_files(file_path).await?;
 
     if files.is_empty() {
         anyhow::bail!("No files to send");
     }
 
-    let base_path = if file_path.is_dir() {
-        file_path.clone()
+    let owned_base_path;
+    let base_path: &Path = if file_path.is_dir() {
+        file_path
     } else {
-        file_path.parent().unwrap_or(Path::new("")).to_path_buf()
+        owned_base_path = file_path.parent().unwrap_or(Path::new(""));
+        owned_base_path
     };
 
     let is_folder = file_path.is_dir();
@@ -295,7 +297,6 @@ pub async fn run_sender(
 
         let _ = stream.shutdown().await;
 
-        // Drop mDNS from connection if not persistent
         if !persistent {
             if let Some(mdns) = mdns_from_connection {
                 let _ = mdns.shutdown();
@@ -305,7 +306,6 @@ pub async fn run_sender(
         println!("\nWaiting for next connection...");
     }
 
-    // Shutdown mDNS handle for persistent mode when loop ends
     if let Some(mdns) = mdns_handle {
         let _ = mdns.shutdown();
     }
