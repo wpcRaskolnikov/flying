@@ -208,11 +208,15 @@ function ReceivePage() {
     }
 
     try {
+      const store = await Store.load("settings.json");
+      let port = await store.get<number>("port");
+      if (!port) port = 3290;
       await invoke("receive_file", {
         password: receivePassword,
         connectionMode,
         connectIp: connectIp.trim() || null,
         outputDirUri: outputDirUri,
+        port,
       });
     } catch (error) {
       console.error("Failed to receive file:", error);

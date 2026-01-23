@@ -24,6 +24,7 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
+import { Store } from "@tauri-apps/plugin-store";
 
 type ConnectionMode = "listen" | "connect";
 
@@ -200,11 +201,15 @@ function SendPage() {
     }
 
     try {
+      const store = await Store.load("settings.json");
+      let port = await store.get<number>("port");
+      if (!port) port = 3290;
       await invoke("send_file_from_uri", {
         fileUri: selectedFile,
         password: sendPassword,
         connectionMode,
         connectIp: connectIp.trim() || null,
+        port,
       });
     } catch (error) {
       console.error("Failed to send file:", error);

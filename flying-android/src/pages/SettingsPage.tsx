@@ -78,6 +78,42 @@ function SettingsPage() {
     }
   };
 
+  const handleSavePort = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!store) return;
+
+    const formData = new FormData(event.currentTarget);
+    const portValue = formData.get("port") as string;
+
+    try {
+      const portNumber = parseInt(portValue, 10);
+      if (isNaN(portNumber) || portNumber < 1 || portNumber > 65535) {
+        setSnackbar({
+          open: true,
+          message: "Port must be between 1 and 65535",
+          severity: "error",
+        });
+        return;
+      }
+
+      await store.set("port", portNumber);
+      await store.save();
+
+      setSnackbar({
+        open: true,
+        message: "Port saved. Changes will take effect on next transfer",
+        severity: "success",
+      });
+    } catch (error) {
+      console.error("Failed to save port:", error);
+      setSnackbar({
+        open: true,
+        message: `Failed to save port: ${error}`,
+        severity: "error",
+      });
+    }
+  };
+
   return (
     <Box sx={{ p: 2, pt: 3 }}>
       <Typography variant="h5" gutterBottom sx={{ fontWeight: 600, mb: 3 }}>
@@ -110,6 +146,40 @@ function SettingsPage() {
             sx={{ whiteSpace: "nowrap", minWidth: "auto", px: 2 }}
           >
             SELECT
+          </Button>
+        </Box>
+      </Paper>
+
+      <Paper sx={{ p: 2, mb: 2 }}>
+        <Typography variant="subtitle1" gutterBottom sx={{ fontWeight: 500 }}>
+          Port Configuration
+        </Typography>
+
+        <Box
+          component="form"
+          onSubmit={handleSavePort}
+          sx={{ display: "flex", gap: 1, alignItems: "center" }}
+        >
+          <TextField
+            name="port"
+            fullWidth
+            placeholder="Port number (1-65535)"
+            defaultValue="3290"
+            size="small"
+            type="number"
+            slotProps={{
+              input: {
+                inputProps: { min: 1, max: 65535 },
+              },
+            }}
+          />
+          <Button
+            type="submit"
+            variant="contained"
+            size="small"
+            sx={{ whiteSpace: "nowrap", minWidth: "auto", px: 2 }}
+          >
+            SAVE
           </Button>
         </Box>
       </Paper>

@@ -188,97 +188,86 @@ async fn send_file_from_uri(
     password: String,
     connection_mode: ConnectionMode,
     connect_ip: Option<String>,
+    port: u16,
     _app: tauri::AppHandle,
     window: tauri::Window,
     state: tauri::State<'_, Arc<Mutex<TransferState>>>,
 ) -> Result<(), String> {
     let mode = connection_mode.to_flying_mode(connect_ip);
 
-    // Spawn in a blocking thread since flying operations are not Send-safe
     let (abort_handle, abort_registration) = tokio::sync::oneshot::channel::<()>();
 
-    std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("Failed to create local runtime");
+    tokio::spawn(async move {
+        let _ = window.emit("send-start", serde_json::json!({}));
 
-        rt.block_on(async {
-            let _ = window.emit("send-start", serde_json::json!({}));
+        #[cfg(target_os = "android")]
+        let result: Result<(), String> = async {
+            use tauri_plugin_android_fs::{AndroidFsExt, FileUri};
 
-            #[cfg(target_os = "android")]
-            let result: Result<(), String> = async {
-                use tauri_plugin_android_fs::{AndroidFsExt, FileUri};
+            let api = _app.android_fs_async();
+            let uri = FileUri::from_json_str(&file_uri)
+                .map_err(|e| format!("Failed to parse URI: {}", e))?;
+            let file_name = api
+                .get_name(&uri)
+                .await
+                .map_err(|e| format!("Failed to get file name: {}", e))?;
+            let source_file = api
+                .open_file_readable(&uri)
+                .await
+                .map_err(|e| format!("Failed to open file: {}", e))?;
 
-                let api = _app.android_fs_async();
-                let uri = FileUri::from_json_str(&file_uri)
-                    .map_err(|e| format!("Failed to parse URI: {}", e))?;
-                let file_name = api
-                    .get_name(&uri)
-                    .await
-                    .map_err(|e| format!("Failed to get file name: {}", e))?;
-                let source_file = api
-                    .open_file_readable(&uri)
-                    .await
-                    .map_err(|e| format!("Failed to open file: {}", e))?;
+            let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(32);
+            let window_clone = window.clone();
 
-                // Create progress channel (buffered to avoid blocking)
-                let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(32);
-                let window_clone = window.clone();
+            tokio::spawn(async move {
+                while let Some(percent) = progress_rx.recv().await {
+                    let _ = window_clone.emit("send-progress", percent);
+                }
+            });
 
-                // Spawn task to listen for progress updates
-                tokio::spawn(async move {
-                    while let Some(percent) = progress_rx.recv().await {
-                        let _ = window_clone.emit("send-progress", percent);
-                    }
-                });
-
-                tokio::select! {
-                    _ = abort_registration => {
-                        Err("Transfer cancelled".to_string())
-                    }
-                    result = flying::run_sender_from_handle(source_file, &file_name, &password, mode, Some(progress_tx)) => {
-                        result.map_err(|e| format!("Send error: {}", e))
-                    }
+            tokio::select! {
+                _ = abort_registration => {
+                    Err("Transfer cancelled".to_string())
+                }
+                result = flying::run_sender_from_handle(source_file, &file_name, &password, mode, port, Some(progress_tx)) => {
+                    result.map_err(|e| format!("Send error: {}", e))
                 }
             }
-            .await;
+        }
+        .await;
 
-            #[cfg(not(target_os = "android"))]
-            let result: Result<(), String> = async {
-                let file_path = std::path::PathBuf::from(&file_uri);
+        #[cfg(not(target_os = "android"))]
+        let result: Result<(), String> = async {
+            let file_path = std::path::PathBuf::from(&file_uri);
 
-                // Create progress channel (buffered to avoid blocking)
-                let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(32);
-                let window_clone = window.clone();
+            let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(32);
+            let window_clone = window.clone();
 
-                // Spawn task to listen for progress updates
-                tokio::spawn(async move {
-                    while let Some(percent) = progress_rx.recv().await {
-                        let _ = window_clone.emit("send-progress", percent);
-                    }
-                });
+            tokio::spawn(async move {
+                while let Some(percent) = progress_rx.recv().await {
+                    let _ = window_clone.emit("send-progress", percent);
+                }
+            });
 
-                tokio::select! {
-                    _ = abort_registration => {
-                        Err("Transfer cancelled".to_string())
-                    }
-                    result = flying::run_sender(&file_path, &password, mode, false, Some(progress_tx)) => {
-                        result.map_err(|e| format!("Send error: {}", e))
-                    }
+            tokio::select! {
+                _ = abort_registration => {
+                    Err("Transfer cancelled".to_string())
+                }
+                result = flying::run_sender(&file_path, &password, mode, false, port, Some(progress_tx)) => {
+                    result.map_err(|e| format!("Send error: {}", e))
                 }
             }
-            .await;
+        }
+        .await;
 
-            match result {
-                Ok(_) => {
-                    let _ = window.emit("send-complete", serde_json::json!({}));
-                }
-                Err(e) => {
-                    let _ = window.emit("send-error", e);
-                }
+        match result {
+            Ok(_) => {
+                let _ = window.emit("send-complete", serde_json::json!({}));
             }
-        });
+            Err(e) => {
+                let _ = window.emit("send-error", e);
+            }
+        }
     });
 
     let mut transfer_state = state.lock().await;
@@ -294,6 +283,7 @@ async fn receive_file(
     connection_mode: ConnectionMode,
     connect_ip: Option<String>,
     output_dir_uri: String,
+    port: u16,
     app: tauri::AppHandle,
     window: tauri::Window,
     state: tauri::State<'_, Arc<Mutex<TransferState>>>,
@@ -302,60 +292,53 @@ async fn receive_file(
 
     let (abort_handle, abort_registration) = tokio::sync::oneshot::channel::<()>();
 
-    std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("Failed to create local runtime");
+    tokio::spawn(async move {
+        let _ = window.emit("receive-start", serde_json::json!({}));
 
-        rt.block_on(async {
-            let _ = window.emit("receive-start", serde_json::json!({}));
+        let result: Result<(), String> = async {
+            use tauri_plugin_android_fs::{AndroidFsExt, FileUri};
 
-            let result: Result<(), String> = async {
-                use tauri_plugin_android_fs::{AndroidFsExt, FileUri};
+            let api = app.android_fs_async();
 
-                let api = app.android_fs_async();
+            let output_uri = FileUri::from_json_str(&output_dir_uri)
+                .map_err(|e| format!("Failed to parse output directory URI: {}", e))?;
 
-                let output_uri = FileUri::from_json_str(&output_dir_uri)
-                    .map_err(|e| format!("Failed to parse output directory URI: {}", e))?;
+            // For Android, we need to adapt the receiver to write to Android content URI
+            // This is a temporary solution that uses the default path
+            // TODO: Implement proper Android content URI writing in flying crate
+            let download_dir = PathBuf::from("/storage/emulated/0/Download");
 
-                // For Android, we need to adapt the receiver to write to Android content URI
-                // This is a temporary solution that uses the default path
-                // TODO: Implement proper Android content URI writing in flying crate
-                let download_dir = PathBuf::from("/storage/emulated/0/Download");
+            // Create progress channel (buffered to avoid blocking)
+            let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(32);
+            let window_clone = window.clone();
 
-                // Create progress channel (buffered to avoid blocking)
-                let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(32);
-                let window_clone = window.clone();
+            // Spawn task to listen for progress updates
+            tokio::spawn(async move {
+                while let Some(percent) = progress_rx.recv().await {
+                    let _ = window_clone.emit("receive-progress", percent);
+                }
+            });
 
-                // Spawn task to listen for progress updates
-                tokio::spawn(async move {
-                    while let Some(percent) = progress_rx.recv().await {
-                        let _ = window_clone.emit("receive-progress", percent);
-                    }
-                });
-
-                // Check for cancellation or run transfer
-                tokio::select! {
-                    _ = abort_registration => {
-                        Err("Transfer cancelled".to_string())
-                    }
-                    result = flying::run_receiver(&download_dir, &password, mode, Some(progress_tx)) => {
-                        result.map_err(|e| format!("Receive error: {}", e))
-                    }
+            // Check for cancellation or run transfer
+            tokio::select! {
+                _ = abort_registration => {
+                    Err("Transfer cancelled".to_string())
+                }
+                result = flying::run_receiver(&download_dir, &password, mode, port, Some(progress_tx)) => {
+                    result.map_err(|e| format!("Receive error: {}", e))
                 }
             }
-            .await;
+        }
+        .await;
 
-            match result {
-                Ok(_) => {
-                    let _ = window.emit("receive-complete", serde_json::json!({}));
-                }
-                Err(e) => {
-                    let _ = window.emit("receive-error", e);
-                }
+        match result {
+            Ok(_) => {
+                let _ = window.emit("receive-complete", serde_json::json!({}));
             }
-        });
+            Err(e) => {
+                let _ = window.emit("receive-error", e);
+            }
+        }
     });
 
     // Store the abort sender
@@ -372,6 +355,7 @@ async fn receive_file(
     connection_mode: ConnectionMode,
     connect_ip: Option<String>,
     output_dir_uri: String,
+    port: u16,
     window: tauri::Window,
     state: tauri::State<'_, Arc<Mutex<TransferState>>>,
 ) -> Result<(), String> {
@@ -380,45 +364,38 @@ async fn receive_file(
 
     let (abort_handle, abort_registration) = tokio::sync::oneshot::channel::<()>();
 
-    std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("Failed to create local runtime");
+    tokio::spawn(async move {
+        let _ = window.emit("receive-start", serde_json::json!({}));
 
-        rt.block_on(async {
-            let _ = window.emit("receive-start", serde_json::json!({}));
+        // Create progress channel (buffered to avoid blocking)
+        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(32);
+        let window_clone = window.clone();
 
-            // Create progress channel (buffered to avoid blocking)
-            let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(32);
-            let window_clone = window.clone();
-
-            // Spawn task to listen for progress updates
-            tokio::spawn(async move {
-                while let Some(percent) = progress_rx.recv().await {
-                    let _ = window_clone.emit("receive-progress", percent);
-                }
-            });
-
-            // Check for cancellation or run transfer
-            let result = tokio::select! {
-                _ = abort_registration => {
-                    Err("Transfer cancelled".to_string())
-                }
-                result = flying::run_receiver(&output_dir, &password, mode, Some(progress_tx)) => {
-                    result.map_err(|e| format!("Receive error: {}", e))
-                }
-            };
-
-            match result {
-                Ok(_) => {
-                    let _ = window.emit("receive-complete", serde_json::json!({}));
-                }
-                Err(e) => {
-                    let _ = window.emit("receive-error", e);
-                }
+        // Spawn task to listen for progress updates
+        tokio::spawn(async move {
+            while let Some(percent) = progress_rx.recv().await {
+                let _ = window_clone.emit("receive-progress", percent);
             }
         });
+
+        // Check for cancellation or run transfer
+        let result = tokio::select! {
+            _ = abort_registration => {
+                Err("Transfer cancelled".to_string())
+            }
+            result = flying::run_receiver(&output_dir, &password, mode, port, Some(progress_tx)) => {
+                result.map_err(|e| format!("Receive error: {}", e))
+            }
+        };
+
+        match result {
+            Ok(_) => {
+                let _ = window.emit("receive-complete", serde_json::json!({}));
+            }
+            Err(e) => {
+                let _ = window.emit("receive-error", e);
+            }
+        }
     });
 
     // Store the abort sender
