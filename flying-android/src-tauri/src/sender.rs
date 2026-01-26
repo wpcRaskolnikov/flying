@@ -141,6 +141,7 @@ pub async fn send_file(
                         let _ = window_clone.emit("send-progress", percent);
                     }
                 });
+                let folder_name = file_name.clone();
 
                 tokio::select! {
                     _ = abort_registration => {
@@ -152,7 +153,7 @@ pub async fn send_file(
                             path: file_name,
                             size: file_size,
                         }],
-                        None,
+                        &folder_name,
                         &password,
                         mode,
                         port,
@@ -278,14 +279,7 @@ async fn send_android_folder(
     }
 
     // Use flying's run_sender_from_handle which handles everything
-    flying::run_sender_from_handle(
-        file_handles,
-        Some(folder_name),
-        password,
-        mode,
-        port,
-        progress_tx,
-    )
-    .await
-    .map_err(|e| format!("Send error: {}", e))
+    flying::run_sender_from_handle(file_handles, folder_name, password, mode, port, progress_tx)
+        .await
+        .map_err(|e| format!("Send error: {}", e))
 }

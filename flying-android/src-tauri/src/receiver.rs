@@ -23,7 +23,7 @@ pub async fn receive_file(
     password: String,
     connection_mode: ConnectionMode,
     connect_ip: Option<String>,
-    output_dir_uri: String,
+    _output_dir_uri: String,
     port: u16,
     window: tauri::Window,
     state: tauri::State<'_, Arc<Mutex<TransferState>>>,
@@ -48,7 +48,7 @@ pub async fn receive_file(
 
         #[cfg(not(target_os = "android"))]
         {
-            output_dir = PathBuf::from(output_dir_uri);
+            output_dir = PathBuf::from(_output_dir_uri);
         }
 
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(32);
