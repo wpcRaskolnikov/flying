@@ -1,10 +1,7 @@
 use crate::utils;
 use humansize::{BINARY, format_size};
 use ring::aead;
-use std::{
-    path::Path,
-    time::{Duration, Instant},
-};
+use std::path::Path;
 use tokio::{
     fs::{self, File},
     io::{AsyncReadExt, AsyncWriteExt},
@@ -35,7 +32,7 @@ async fn check_duplicate(stream: &mut TcpStream, file: &mut File) -> anyhow::Res
 
     let matches = local_hash.as_ref() == &peer_hash[..];
 
-    Ok(!matches)
+    Ok(matches)
 }
 
 async fn decrypt_and_save(
@@ -87,34 +84,29 @@ pub async fn receive_file(
     stream: &mut TcpStream,
     output_dir: &Path,
     key: &aead::LessSafeKey,
-    is_single_file: bool,
     progress_tx: Option<Sender<u8>>,
 ) -> anyhow::Result<()> {
-    let start = Instant::now();
-
     let (filename, file_size) = receive_metadata(stream).await?;
-    println!("Receiving: {}", filename);
-    println!("File size: {}", format_size(file_size, BINARY));
+    println!(
+        "Receiving: {} ({})",
+        filename,
+        format_size(file_size, BINARY)
+    );
 
     let mut full_path = output_dir.to_path_buf();
     full_path.push(&filename);
 
-    if is_single_file {
-        // Check if path exists
-        if let Ok(metadata) = tokio::fs::metadata(&full_path).await {
-            // Check if is a file
-            if metadata.is_file() {
-                let mut file = File::open(&full_path).await?;
-                if !check_duplicate(stream, &mut file).await? {
-                    println!("Already have this file, skipping.");
-                    return Ok(());
-                }
-            } else {
-                stream.write_u64(0).await?;
-            }
-        } else {
-            stream.write_u64(0).await?;
+    // Check if perform duplicate check
+    if let Ok(metadata) = tokio::fs::metadata(&full_path).await
+        && metadata.is_file()
+    {
+        let mut file = File::open(&full_path).await?;
+        if check_duplicate(stream, &mut file).await? {
+            println!("Already have this file, skipping.");
+            return Ok(());
         }
+    } else {
+        stream.write_u64(0).await?;
     }
 
     // Create parent directories
@@ -122,37 +114,63 @@ pub async fn receive_file(
         fs::create_dir_all(parent).await?;
     }
 
-    // Handle filename conflicts
-    let mut counter = 1;
-    while tokio::fs::metadata(&full_path)
-        .await
-        .map(|m| m.is_file())
-        .unwrap_or(false)
-    {
-        let original_name = full_path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-        let extension = full_path.extension().and_then(|s| s.to_str());
-
-        let new_name = if let Some(ext) = extension {
-            format!("{} ({}).{}", original_name, counter, ext)
-        } else {
-            format!("{} ({})", original_name, counter)
-        };
-        full_path.pop();
-        full_path.push(new_name);
-        counter += 1;
-    }
-
     let mut out_file = File::create(&full_path).await?;
     decrypt_and_save(stream, &mut out_file, file_size, key, progress_tx).await?;
 
-    let elapsed = start.elapsed();
-    println!(
-        "Receiving took {}",
-        humantime::format_duration(Duration::from_secs_f64(elapsed.as_secs_f64()))
-    );
+    Ok(())
+}
 
-    let megabits = 8.0 * (file_size as f64 / 1_000_000.0);
-    println!("Speed: {:.2} Mbps", megabits / elapsed.as_secs_f64());
+pub async fn receive_folder(
+    stream: &mut TcpStream,
+    folder_path: &Path,
+    key: &aead::LessSafeKey,
+    progress_tx: Option<Sender<u8>>,
+) -> anyhow::Result<()> {
+    println!(
+        "Creating folder: {}",
+        folder_path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+    );
+    if !folder_path.exists() {
+        fs::create_dir_all(&folder_path).await?;
+    }
+
+    let mut file_count = 0u64;
+    loop {
+        // Read filename
+        let filename_len = stream.read_u64().await? as usize;
+        if filename_len == 0 {
+            break;
+        }
+        let mut filename_bytes = vec![0; filename_len];
+        stream.read_exact(&mut filename_bytes).await?;
+        let filename = String::from_utf8_lossy(&filename_bytes).to_string();
+
+        // Read file
+        let file_size = stream.read_u64().await?;
+        file_count += 1;
+        println!(
+            "[{}] {} ({})",
+            file_count,
+            filename,
+            format_size(file_size, BINARY)
+        );
+
+        let mut full_path = folder_path.join(&filename);
+
+        // Create parent directories
+        if let Some(parent) = full_path.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+
+        // Handle filename conflicts
+        full_path = utils::handle_filename_conflict(full_path).await;
+
+        let mut out_file = File::create(&full_path).await?;
+        decrypt_and_save(stream, &mut out_file, file_size, key, progress_tx.clone()).await?;
+    }
 
     Ok(())
 }

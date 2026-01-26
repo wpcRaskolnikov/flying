@@ -1,10 +1,7 @@
 use crate::utils;
 use humansize::{BINARY, format_size};
 use ring::{aead, rand};
-use std::{
-    path::Path,
-    time::{Duration, Instant},
-};
+use std::path::Path;
 use tokio::{
     fs::File,
     io::{AsyncReadExt, AsyncWriteExt},
@@ -14,14 +11,18 @@ use tokio::{
 
 const CHUNK_SIZE: usize = 1_048_576; // 1 MiB
 
-async fn send_metadata(stream: &mut TcpStream, filename: &str, size: u64) -> anyhow::Result<()> {
+pub async fn send_metadata(
+    stream: &mut TcpStream,
+    filename: &str,
+    size: u64,
+) -> anyhow::Result<()> {
     stream.write_u64(filename.len() as u64).await?;
     stream.write_all(filename.as_bytes()).await?;
     stream.write_u64(size).await?;
     Ok(())
 }
 
-async fn check_duplicate(stream: &mut TcpStream, file: &mut File) -> anyhow::Result<bool> {
+pub async fn check_duplicate(stream: &mut TcpStream, file: &mut File) -> anyhow::Result<bool> {
     let has_file = stream.read_u64().await?;
     if has_file == 1 {
         let (mut read_half, mut write_half) = stream.split();
@@ -40,7 +41,7 @@ async fn check_duplicate(stream: &mut TcpStream, file: &mut File) -> anyhow::Res
     }
 }
 
-async fn encrypt_and_send(
+pub async fn encrypt_and_send(
     stream: &mut TcpStream,
     mut file: File,
     size: u64,
@@ -92,71 +93,77 @@ async fn encrypt_and_send(
 
 pub async fn send_file(
     stream: &mut TcpStream,
-    mut file: File,
-    filename: &str,
-    size: u64,
+    file_path: &Path,
     key: &aead::LessSafeKey,
-    is_single_file: bool,
     progress_tx: Option<Sender<u8>>,
 ) -> anyhow::Result<()> {
-    let start = Instant::now();
+    let metadata = tokio::fs::metadata(file_path).await?;
+    let size = metadata.len();
 
-    println!("Sending file: {}", filename);
-    println!("File size: {}", format_size(size, BINARY));
+    let filename = file_path
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("Invalid filename"))?
+        .to_string_lossy()
+        .to_string();
 
-    send_metadata(stream, filename, size).await?;
+    println!("Sending: {} ({})", filename, format_size(size, BINARY));
 
-    if is_single_file && check_duplicate(stream, &mut file).await? {
+    send_metadata(stream, &filename, size).await?;
+
+    let mut file = File::open(file_path).await?;
+    if check_duplicate(stream, &mut file).await? {
         println!("Recipient already has this file, skipping.");
         return Ok(());
     }
 
     encrypt_and_send(stream, file, size, key, progress_tx).await?;
 
-    let elapsed = start.elapsed();
-    println!(
-        "Sending took {}",
-        humantime::format_duration(Duration::from_secs_f64(elapsed.as_secs_f64()))
-    );
-
-    let megabits = 8.0 * (size as f64 / 1_000_000.0);
-    println!("Speed: {:.2} Mbps", megabits / elapsed.as_secs_f64());
-
     Ok(())
 }
 
-pub async fn send_from_path(
+pub async fn send_folder(
     stream: &mut TcpStream,
-    file_path: &Path,
-    base_path: &Path,
+    folder_path: &Path,
     key: &aead::LessSafeKey,
-    is_single_file: bool,
     progress_tx: Option<Sender<u8>>,
 ) -> anyhow::Result<()> {
-    let metadata = tokio::fs::metadata(file_path).await?;
-    let size = metadata.len();
+    async fn send_recursive(
+        stream: &mut TcpStream,
+        current_dir: &Path,
+        base_path: &Path,
+        key: &aead::LessSafeKey,
+        progress_tx: &Option<Sender<u8>>,
+    ) -> anyhow::Result<()> {
+        let mut entries = tokio::fs::read_dir(current_dir).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            let metadata = tokio::fs::metadata(&path).await?;
 
-    // Extract filename: if base_path is empty use only the filename,
-    // otherwise use the relative path from base_path (preserves folder structure)
-    let filename = if base_path.as_os_str().is_empty() {
-        file_path.file_name().unwrap().to_string_lossy().to_string()
-    } else {
-        file_path
-            .strip_prefix(base_path)
-            .unwrap_or(file_path)
-            .to_string_lossy()
-            .to_string()
-    };
+            if metadata.is_dir() {
+                Box::pin(send_recursive(stream, &path, base_path, key, progress_tx)).await?;
+            } else {
+                let size = metadata.len();
+                let filename = path
+                    .strip_prefix(base_path)
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .to_string();
 
-    let file = File::open(file_path).await?;
-    send_file(
-        stream,
-        file,
-        &filename,
-        size,
-        key,
-        is_single_file,
-        progress_tx,
-    )
-    .await
+                println!("Sending: {} ({})", filename, format_size(size, BINARY));
+
+                send_metadata(stream, &filename, size).await?;
+
+                let file = File::open(&path).await?;
+                encrypt_and_send(stream, file, size, key, progress_tx.clone()).await?;
+            }
+        }
+        Ok(())
+    }
+
+    send_recursive(stream, folder_path, folder_path, key, &progress_tx).await?;
+
+    // Send end signal (empty filename)
+    stream.write_u64(0).await?;
+
+    Ok(())
 }

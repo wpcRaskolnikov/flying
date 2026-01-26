@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use flying::{ConnectionMode, run_receiver, run_sender, utils};
+use flying::{ConnectionMode, run_receiver, run_sender, run_sender_persistent};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
@@ -68,7 +68,7 @@ fn print_session_info(
 
 fn get_or_prompt_password(connection_mode: &ConnectionMode, password: Option<String>) -> String {
     match connection_mode {
-        ConnectionMode::Listen => utils::generate_password(),
+        ConnectionMode::Listen => flying::generate_password(),
         ConnectionMode::AutoDiscover | ConnectionMode::Connect(_) => {
             password.unwrap_or_else(|| {
                 println!("Please enter password:");
@@ -113,9 +113,13 @@ async fn main() {
             let password = get_or_prompt_password(&connection_mode, password);
             print_session_info("SEND", &password, &connection_mode, None);
 
-            if let Err(e) =
-                run_sender(&file, &password, connection_mode, persistent, port, None).await
-            {
+            let result = if persistent {
+                run_sender_persistent(&file, &password, port, None).await
+            } else {
+                run_sender(&file, &password, connection_mode, port, None).await
+            };
+
+            if let Err(e) = result {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }

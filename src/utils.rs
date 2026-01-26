@@ -3,6 +3,7 @@ use socket2::{Domain, Protocol, Socket, Type};
 use spake2::{Ed25519Group, Identity, Password, Spake2};
 use std::io::{self, Write};
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use tokio::{
     fs::File,
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
@@ -23,10 +24,6 @@ impl hkdf::KeyType for MyKeyType {
     fn len(&self) -> usize {
         self.0
     }
-}
-
-pub fn generate_password() -> String {
-    petname::petname(3, "-").unwrap_or_else(|| "flying-transfer-secret".to_string())
 }
 
 pub async fn hash_file(file: &mut File) -> io::Result<digest::Digest> {
@@ -191,21 +188,16 @@ pub async fn send_handshake(
     stream: &mut TcpStream,
     version: u64,
     password: &str,
-    num_files: u64,
+    relative_path: &str,
     is_folder: bool,
-    folder_name: Option<&str>,
 ) -> anyhow::Result<ring::aead::LessSafeKey> {
     version_handshake(stream, version).await?;
     mode_handshake(stream, MODE_SEND).await?;
     let key_bytes = pake_handshake(stream, password, false).await?;
 
-    stream.write_u64(num_files).await?;
+    stream.write_u64(relative_path.len() as u64).await?;
+    stream.write_all(relative_path.as_bytes()).await?;
     stream.write_u64(u64::from(is_folder)).await?;
-
-    if let Some(name) = folder_name {
-        stream.write_u64(name.len() as u64).await?;
-        stream.write_all(name.as_bytes()).await?;
-    }
 
     let unbound_key = ring::aead::UnboundKey::new(&ring::aead::AES_256_GCM, &key_bytes)
         .map_err(|_| anyhow::anyhow!("Failed to create encryption key"))?;
@@ -216,28 +208,22 @@ pub async fn receive_handshake(
     stream: &mut TcpStream,
     version: u64,
     password: &str,
-) -> anyhow::Result<(ring::aead::LessSafeKey, u64, bool, Option<String>)> {
+) -> anyhow::Result<(ring::aead::LessSafeKey, String, bool)> {
     version_handshake(stream, version).await?;
     mode_handshake(stream, MODE_RECEIVE).await?;
     let key_bytes = pake_handshake(stream, password, true).await?;
 
-    let num_files = stream.read_u64().await?;
+    let len = stream.read_u64().await? as usize;
+    let mut bytes = vec![0; len];
+    stream.read_exact(&mut bytes).await?;
+    let relative_path = String::from_utf8_lossy(&bytes).to_string();
     let is_folder = stream.read_u64().await? == 1;
-
-    let folder_name = if is_folder {
-        let len = stream.read_u64().await? as usize;
-        let mut bytes = vec![0; len];
-        stream.read_exact(&mut bytes).await?;
-        Some(String::from_utf8_lossy(&bytes).to_string())
-    } else {
-        None
-    };
 
     let unbound_key = ring::aead::UnboundKey::new(&ring::aead::AES_256_GCM, &key_bytes)
         .map_err(|_| anyhow::anyhow!("Failed to create decryption key"))?;
     let key = ring::aead::LessSafeKey::new(unbound_key);
 
-    Ok((key, num_files, is_folder, folder_name))
+    Ok((key, relative_path, is_folder))
 }
 
 pub fn create_listener(port: u16) -> anyhow::Result<TcpListener> {
@@ -254,4 +240,26 @@ pub fn create_listener(port: u16) -> anyhow::Result<TcpListener> {
     let listener = tokio::net::TcpListener::from_std(std_listener)?;
 
     Ok(listener)
+}
+
+pub async fn handle_filename_conflict(mut path: PathBuf) -> PathBuf {
+    let mut counter = 1;
+    while tokio::fs::metadata(&path)
+        .await
+        .map(|m| m.is_file())
+        .unwrap_or(false)
+    {
+        let original_name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        let extension = path.extension().and_then(|s| s.to_str());
+
+        let new_name = if let Some(ext) = extension {
+            format!("{} ({}).{}", original_name, counter, ext)
+        } else {
+            format!("{} ({})", original_name, counter)
+        };
+        path.pop();
+        path.push(new_name);
+        counter += 1;
+    }
+    path
 }

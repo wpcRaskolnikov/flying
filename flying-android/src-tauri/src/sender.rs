@@ -52,9 +52,9 @@ pub async fn send_file(
     connection_mode: ConnectionMode,
     connect_ip: Option<String>,
     port: u16,
-    app: tauri::AppHandle,
+    _app: tauri::AppHandle,
     window: tauri::Window,
-    state: tauri::State<', Arc<Mutex<TransferState>>>,
+    state: tauri::State<'_, Arc<Mutex<TransferState>>>,
 ) -> Result<(), String> {
     let mode = connection_mode.to_flying_mode(connect_ip);
 
@@ -182,7 +182,7 @@ pub async fn send_file(
                 _ = abort_registration => {
                     Err("Transfer cancelled".to_string())
                 }
-                result = flying::run_sender(&file_path, &password, mode, false, port, Some(progress_tx)) => {
+                result = flying::run_sender(&file_path, &password, mode, port, Some(progress_tx)) => {
                     result.map_err(|e| format!("Send error: {}", e))
                 }
             }

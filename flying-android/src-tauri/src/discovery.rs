@@ -8,7 +8,7 @@ pub struct DiscoveredHost {
 
 #[tauri::command]
 pub fn generate_password() -> Result<String, String> {
-    Ok(flying::utils::generate_password())
+    Ok(flying::generate_password())
 }
 
 #[tauri::command]

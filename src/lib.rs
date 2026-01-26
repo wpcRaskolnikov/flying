@@ -1,10 +1,10 @@
 pub mod mdns;
 mod receive;
 mod send;
-pub mod utils;
+mod utils;
 use mdns_sd::ServiceDaemon;
 use std::net::{IpAddr, SocketAddr};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use tokio::{io::AsyncWriteExt, net::TcpStream, sync::mpsc::Sender};
 pub const VERSION: u64 = 5;
 
@@ -86,13 +86,13 @@ async fn establish_connection(
         }
         ConnectionMode::Listen => {
             let listener = utils::create_listener(port)?;
-            let mdns = mdns::advertise_service(port)?;
+            let mdns_daemon = mdns::advertise_service(port)?;
 
             println!("Listening on [::]:{} (IPv4/IPv6 dual-stack)...", port);
             println!("Waiting for peer to connect...\n");
             let (stream, socket_addr) = listener.accept().await?;
             println!("Connection accepted from {}\n", socket_addr);
-            Ok((stream, Some(mdns)))
+            Ok((stream, Some(mdns_daemon)))
         }
         ConnectionMode::Connect(ip) => {
             let ip: IpAddr = ip.parse()?;
@@ -105,6 +105,10 @@ async fn establish_connection(
     }
 }
 
+pub fn generate_password() -> String {
+    petname::petname(3, "-").unwrap_or_else(|| "flying-transfer-secret".to_string())
+}
+
 pub async fn run_receiver(
     output_dir: &Path,
     password: &str,
@@ -112,204 +116,125 @@ pub async fn run_receiver(
     port: u16,
     progress_tx: Option<Sender<u8>>,
 ) -> anyhow::Result<()> {
-    let (mut stream, _mdns) = establish_connection(&connection_mode, port).await?;
+    let (mut stream, mdns_daemon) = establish_connection(&connection_mode, port).await?;
 
-    let (key, num_files, is_folder, folder_name) =
+    let (key, relative_path, is_folder) =
         utils::receive_handshake(&mut stream, VERSION, password).await?;
 
-    println!("Receiving {} file(s)...\n", num_files);
-
-    let folder_path;
-    let final_output_dir = if is_folder {
-        let folder_name = folder_name.ok_or_else(|| anyhow::anyhow!("Folder name missing"))?;
-        folder_path = output_dir.join(&folder_name);
-        println!("Creating folder: {}\n", folder_name);
-        if !folder_path.exists() {
-            tokio::fs::create_dir_all(&folder_path).await?;
-        }
-        folder_path.as_path()
+    if is_folder {
+        let folder_path = output_dir.join(&relative_path);
+        receive::receive_folder(&mut stream, &folder_path, &key, progress_tx).await?;
     } else {
-        output_dir
-    };
-
-    let is_single_file = num_files == 1;
-
-    for i in 0..num_files {
-        println!("===========================================");
-        println!("File {} of {}", i + 1, num_files);
-        println!("===========================================");
-        receive::receive_file(
-            &mut stream,
-            final_output_dir,
-            &key,
-            is_single_file,
-            progress_tx.clone(),
-        )
-        .await?;
-        println!();
+        receive::receive_file(&mut stream, output_dir, &key, progress_tx).await?;
     }
 
-    println!("===========================================");
-    println!("Transfer complete!");
-    println!("===========================================");
+    println!("\nTransfer complete!");
 
     stream.shutdown().await?;
-    if let Some(mdns) = _mdns {
-        let _ = mdns.shutdown();
+    if let Some(mdns_daemon) = mdns_daemon {
+        let _ = mdns_daemon.shutdown();
     }
     Ok(())
-}
-
-async fn collect_files(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
-    let metadata = tokio::fs::metadata(dir).await?;
-    if metadata.is_file() {
-        return Ok(vec![dir.to_path_buf()]);
-    }
-
-    let mut files = Vec::new();
-    let mut entries = tokio::fs::read_dir(dir).await?;
-    while let Some(entry) = entries.next_entry().await? {
-        let path = entry.path();
-        let metadata = tokio::fs::metadata(&path).await?;
-        if metadata.is_dir() {
-            let mut sub_files = Box::pin(collect_files(&path)).await?;
-            files.append(&mut sub_files);
-        } else {
-            files.push(path);
-        }
-    }
-    Ok(files)
 }
 
 pub async fn run_sender(
     file_path: &Path,
     password: &str,
     connection_mode: ConnectionMode,
-    persistent: bool,
     port: u16,
     progress_tx: Option<Sender<u8>>,
 ) -> anyhow::Result<()> {
-    let files = collect_files(file_path).await?;
+    let is_folder = file_path.is_dir();
 
-    if files.is_empty() {
-        anyhow::bail!("No files to send");
+    let relative_path = file_path
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("Invalid file/folder name"))?
+        .to_string_lossy()
+        .to_string();
+
+    let (mut stream, mdns_daemon) = establish_connection(&connection_mode, port).await?;
+
+    let key =
+        utils::send_handshake(&mut stream, VERSION, password, &relative_path, is_folder).await?;
+
+    if is_folder {
+        send::send_folder(&mut stream, file_path, &key, progress_tx).await?;
+    } else {
+        send::send_file(&mut stream, file_path, &key, progress_tx).await?;
     }
 
-    let owned_base_path;
-    let base_path: &Path = if file_path.is_dir() {
-        file_path
-    } else {
-        owned_base_path = file_path.parent().unwrap_or(Path::new(""));
-        owned_base_path
-    };
+    println!("\nTransfer complete!");
 
+    stream.shutdown().await?;
+    if let Some(mdns_daemon) = mdns_daemon {
+        let _ = mdns_daemon.shutdown();
+    }
+    Ok(())
+}
+
+pub async fn run_sender_persistent(
+    file_path: &Path,
+    password: &str,
+    port: u16,
+    progress_tx: Option<Sender<u8>>,
+) -> anyhow::Result<()> {
     let is_folder = file_path.is_dir();
-    let folder_name = if is_folder {
-        file_path
-            .file_name()
-            .ok_or_else(|| anyhow::anyhow!("Invalid folder name"))?
-            .to_string_lossy()
-            .to_string()
-    } else {
-        String::new()
-    };
 
-    let (listener, mdns_handle) = if persistent && matches!(connection_mode, ConnectionMode::Listen)
-    {
-        let l = utils::create_listener(port)?;
-        let mdns = mdns::advertise_service(port)?;
-        (Some(l), Some(mdns))
-    } else {
-        (None, None)
-    };
+    let relative_path = file_path
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("Invalid file/folder name"))?
+        .to_string_lossy()
+        .to_string();
+
+    let listener = utils::create_listener(port)?;
+    let _mdns_daemon = mdns::advertise_service(port)?;
 
     let mut transfer_count = 0u32;
     loop {
         transfer_count += 1;
 
-        if persistent {
-            println!("\n===========================================");
-            println!("Transfer #{}", transfer_count);
-            println!("===========================================");
-        }
+        println!("\n===========================================");
+        println!("Transfer #{}", transfer_count);
+        println!("===========================================");
 
-        let (mut stream, mdns_from_connection) = if let Some(ref listener) = listener {
-            println!("Listening on [::]:{} (IPv4/IPv6 dual-stack)...", port);
-            println!("Waiting for peer to connect...\n");
-            let (stream, socket_addr) = listener.accept().await?;
-            println!("Connection accepted from {}\n", socket_addr);
-            (stream, None)
-        } else {
-            establish_connection(&connection_mode, port).await?
-        };
+        println!("Listening on [::]:{} (IPv4/IPv6 dual-stack)...", port);
+        println!("Waiting for peer to connect...\n");
+        let (mut stream, socket_addr) = listener.accept().await?;
+        println!("Connection accepted from {}\n", socket_addr);
 
-        let transfer_result = async {
-            let folder_name_opt = if is_folder {
-                Some(folder_name.as_str())
+        let result = async {
+            let key =
+                utils::send_handshake(&mut stream, VERSION, password, &relative_path, is_folder)
+                    .await?;
+
+            if is_folder {
+                send::send_folder(&mut stream, file_path, &key, progress_tx.clone()).await?;
             } else {
-                None
-            };
-
-            let key = utils::send_handshake(
-                &mut stream,
-                VERSION,
-                password,
-                files.len() as u64,
-                is_folder,
-                folder_name_opt,
-            )
-            .await?;
-
-            let is_single_file = files.len() == 1;
-            for (i, file) in files.iter().enumerate() {
-                println!("\n===========================================");
-                println!("File {} of {}", i + 1, files.len());
-                println!("===========================================");
-                send::send_from_path(
-                    &mut stream,
-                    file,
-                    &base_path,
-                    &key,
-                    is_single_file,
-                    progress_tx.clone(),
-                )
-                .await?;
+                send::send_file(&mut stream, file_path, &key, progress_tx.clone()).await?;
             }
+
+            println!("\nTransfer complete!");
+            stream.shutdown().await?;
 
             Ok::<(), anyhow::Error>(())
         }
         .await;
 
-        match transfer_result {
-            Ok(_) => {
-                println!("\n===========================================");
-                println!("Transfer complete!");
-                println!("===========================================");
-            }
+        match result {
+            Ok(_) => {}
             Err(e) => {
                 eprintln!("\nTransfer error: {}", e);
-                if !persistent {
-                    return Err(e);
-                }
-                eprintln!("Waiting for next connection...");
             }
         }
 
-        let _ = stream.shutdown().await;
-
-        if !persistent {
-            if let Some(mdns) = mdns_from_connection {
-                let _ = mdns.shutdown();
-            }
-            break;
-        }
         println!("\nWaiting for next connection...");
     }
 
-    if let Some(mdns) = mdns_handle {
-        let _ = mdns.shutdown();
+    #[allow(unreachable_code)]
+    {
+        let _ = _mdns_daemon.shutdown();
+        Ok(())
     }
-    Ok(())
 }
 
 pub struct FileHandle {
@@ -317,11 +242,10 @@ pub struct FileHandle {
     pub path: String,
     pub size: u64,
 }
-// For single file: pass vec with one item and folder_name as None
-// For folder: pass vec with multiple items and folder_name as Some(name)
+
 pub async fn run_sender_from_handle(
     files: Vec<FileHandle>,
-    folder_name: Option<&str>,
+    relative_path: &str,
     password: &str,
     connection_mode: ConnectionMode,
     port: u16,
@@ -331,31 +255,24 @@ pub async fn run_sender_from_handle(
         anyhow::bail!("No files to send");
     }
 
-    let (mut stream, _mdns) = establish_connection(&connection_mode, port).await?;
+    let (mut stream, _mdns_daemon) = establish_connection(&connection_mode, port).await?;
 
     let transfer_result = async {
-        let is_folder = folder_name.is_some();
-        let key = utils::send_handshake(
-            &mut stream,
-            VERSION,
-            password,
-            files.len() as u64,
-            is_folder,
-            folder_name,
-        )
-        .await?;
+        let is_folder = files.len() > 1;
 
-        let is_single_file = files.len() == 1 && !is_folder;
+        let key =
+            utils::send_handshake(&mut stream, VERSION, password, relative_path, is_folder).await?;
+
+        let check_duplicate_flag = !is_folder;
         let total_files = files.len();
 
         for (i, file_handle) in files.into_iter().enumerate() {
-            println!("\n===========================================");
-            println!("File {} of {}", i + 1, total_files);
-            println!("===========================================");
+            if total_files > 1 {
+                println!("[{}] Sending...", i + 1);
+            }
 
             let tokio_file = tokio::fs::File::from_std(file_handle.file);
 
-            // Create per-file progress that contributes to overall progress
             let file_progress_tx = if let Some(ref tx) = progress_tx {
                 let tx = tx.clone();
                 let (file_tx, mut file_rx) = tokio::sync::mpsc::channel::<u8>(32);
@@ -374,16 +291,44 @@ pub async fn run_sender_from_handle(
                 None
             };
 
-            send::send_file(
-                &mut stream,
-                tokio_file,
-                &file_handle.path,
-                file_handle.size,
-                &key,
-                is_single_file,
-                file_progress_tx,
-            )
-            .await?;
+            // Send file
+            println!(
+                "Sending: {} ({})",
+                file_handle.path,
+                humansize::format_size(file_handle.size, humansize::BINARY)
+            );
+
+            send::send_metadata(&mut stream, &file_handle.path, file_handle.size).await?;
+
+            if check_duplicate_flag {
+                let mut temp_file = tokio_file;
+                if send::check_duplicate(&mut stream, &mut temp_file).await? {
+                    println!("Recipient already has this file, skipping.");
+                    continue;
+                }
+                send::encrypt_and_send(
+                    &mut stream,
+                    temp_file,
+                    file_handle.size,
+                    &key,
+                    file_progress_tx,
+                )
+                .await?;
+            } else {
+                send::encrypt_and_send(
+                    &mut stream,
+                    tokio_file,
+                    file_handle.size,
+                    &key,
+                    file_progress_tx,
+                )
+                .await?;
+            }
+        }
+
+        // Send end signal if it's a folder
+        if is_folder {
+            stream.write_u64(0).await?;
         }
 
         Ok::<(), anyhow::Error>(())
@@ -392,9 +337,7 @@ pub async fn run_sender_from_handle(
 
     match transfer_result {
         Ok(_) => {
-            println!("\n===========================================");
-            println!("Transfer complete!");
-            println!("===========================================");
+            println!("\nTransfer complete!");
         }
         Err(e) => {
             eprintln!("\nTransfer error: {}", e);
@@ -403,8 +346,8 @@ pub async fn run_sender_from_handle(
     }
 
     stream.shutdown().await?;
-    if let Some(mdns) = _mdns {
-        let _ = mdns.shutdown();
+    if let Some(mdns_daemon) = _mdns_daemon {
+        let _ = mdns_daemon.shutdown();
     }
     Ok(())
 }
