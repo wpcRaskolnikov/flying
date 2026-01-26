@@ -132,7 +132,7 @@ pub async fn run_receiver(
         output_dir
     };
 
-    let check_duplicate = num_files == 1;
+    let is_single_file = num_files == 1;
 
     for i in 0..num_files {
         println!("===========================================");
@@ -142,7 +142,7 @@ pub async fn run_receiver(
             &mut stream,
             final_output_dir,
             &key,
-            check_duplicate,
+            is_single_file,
             progress_tx.clone(),
         )
         .await?;
@@ -260,7 +260,7 @@ pub async fn run_sender(
             )
             .await?;
 
-            let check_duplicate = files.len() == 1;
+            let is_single_file = files.len() == 1;
             for (i, file) in files.iter().enumerate() {
                 println!("\n===========================================");
                 println!("File {} of {}", i + 1, files.len());
@@ -270,7 +270,7 @@ pub async fn run_sender(
                     file,
                     &base_path,
                     &key,
-                    check_duplicate,
+                    is_single_file,
                     progress_tx.clone(),
                 )
                 .await?;

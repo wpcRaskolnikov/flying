@@ -24,12 +24,19 @@ async fn send_metadata(stream: &mut TcpStream, filename: &str, size: u64) -> any
 async fn check_duplicate(stream: &mut TcpStream, file: &mut File) -> anyhow::Result<bool> {
     let has_file = stream.read_u64().await?;
     if has_file == 1 {
-        let hash = utils::hash_file(file).await?;
-        stream.write_all(hash.as_ref()).await?;
-        let match_flag = stream.read_u64().await?;
-        Ok(match_flag == 0) // need transfer if hashes don't match
+        let (mut read_half, mut write_half) = stream.split();
+        let local_hash = utils::hash_file(file).await?;
+        let mut peer_hash = vec![0; 32];
+
+        tokio::try_join!(
+            write_half.write_all(local_hash.as_ref()),
+            read_half.read_exact(&mut peer_hash)
+        )?;
+
+        let matches = local_hash.as_ref() == &peer_hash[..];
+        Ok(matches)
     } else {
-        Ok(true) // need transfer
+        Ok(false)
     }
 }
 
@@ -89,7 +96,7 @@ pub async fn send_file(
     filename: &str,
     size: u64,
     key: &aead::LessSafeKey,
-    check_dup: bool,
+    is_single_file: bool,
     progress_tx: Option<Sender<u8>>,
 ) -> anyhow::Result<()> {
     let start = Instant::now();
@@ -99,7 +106,7 @@ pub async fn send_file(
 
     send_metadata(stream, filename, size).await?;
 
-    if check_dup && !check_duplicate(stream, &mut file).await? {
+    if is_single_file && check_duplicate(stream, &mut file).await? {
         println!("Recipient already has this file, skipping.");
         return Ok(());
     }
@@ -123,12 +130,14 @@ pub async fn send_from_path(
     file_path: &Path,
     base_path: &Path,
     key: &aead::LessSafeKey,
-    check_dup: bool,
+    is_single_file: bool,
     progress_tx: Option<Sender<u8>>,
 ) -> anyhow::Result<()> {
     let metadata = tokio::fs::metadata(file_path).await?;
     let size = metadata.len();
 
+    // Extract filename: if base_path is empty use only the filename,
+    // otherwise use the relative path from base_path (preserves folder structure)
     let filename = if base_path.as_os_str().is_empty() {
         file_path.file_name().unwrap().to_string_lossy().to_string()
     } else {
@@ -140,5 +149,14 @@ pub async fn send_from_path(
     };
 
     let file = File::open(file_path).await?;
-    send_file(stream, file, &filename, size, key, check_dup, progress_tx).await
+    send_file(
+        stream,
+        file,
+        &filename,
+        size,
+        key,
+        is_single_file,
+        progress_tx,
+    )
+    .await
 }

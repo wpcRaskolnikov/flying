@@ -57,6 +57,7 @@ fn is_valid_ip(ip_addr: IpAddr) -> bool {
 
     !is_link_local
 }
+
 pub fn discover_services(timeout_secs: u64) -> anyhow::Result<Vec<DiscoveredService>> {
     let mdns = ServiceDaemon::new()?;
     let receiver = mdns.browse(SERVICE_TYPE)?;

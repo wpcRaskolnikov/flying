@@ -23,12 +23,19 @@ async fn receive_metadata(stream: &mut TcpStream) -> anyhow::Result<(String, u64
 
 async fn check_duplicate(stream: &mut TcpStream, file: &mut File) -> anyhow::Result<bool> {
     stream.write_u64(1).await?;
+
+    let (mut read_half, mut write_half) = stream.split();
     let local_hash = utils::hash_file(file).await?;
     let mut peer_hash = vec![0; 32];
-    stream.read_exact(&mut peer_hash).await?;
-    let matches = local_hash.as_ref() == peer_hash.as_slice();
-    stream.write_u64(u64::from(matches)).await?;
-    Ok(!matches) // need transfer if hashes don't match
+
+    tokio::try_join!(
+        write_half.write_all(local_hash.as_ref()),
+        read_half.read_exact(&mut peer_hash)
+    )?;
+
+    let matches = local_hash.as_ref() == &peer_hash[..];
+
+    Ok(!matches)
 }
 
 async fn decrypt_and_save(
@@ -48,7 +55,7 @@ async fn decrypt_and_save(
     loop {
         let packet_len = stream.read_u64().await? as usize;
         if packet_len == 0 {
-            break; // End of file
+            break;
         }
 
         let mut packet = vec![0u8; packet_len];
@@ -80,7 +87,7 @@ pub async fn receive_file(
     stream: &mut TcpStream,
     output_dir: &Path,
     key: &aead::LessSafeKey,
-    check_dup: bool,
+    is_single_file: bool,
     progress_tx: Option<Sender<u8>>,
 ) -> anyhow::Result<()> {
     let start = Instant::now();
@@ -92,24 +99,22 @@ pub async fn receive_file(
     let mut full_path = output_dir.to_path_buf();
     full_path.push(&filename);
 
-    if check_dup {
+    if is_single_file {
+        // Check if path exists
         if let Ok(metadata) = tokio::fs::metadata(&full_path).await {
-            if metadata.is_file() && metadata.len() == file_size {
+            // Check if is a file
+            if metadata.is_file() {
                 let mut file = File::open(&full_path).await?;
                 if !check_duplicate(stream, &mut file).await? {
                     println!("Already have this file, skipping.");
                     return Ok(());
                 }
+            } else {
+                stream.write_u64(0).await?;
             }
+        } else {
+            stream.write_u64(0).await?;
         }
-    }
-
-    if !check_dup {
-        // Only send the "no file" signal if we're not checking duplicates
-    } else if tokio::fs::metadata(&full_path).await.is_err()
-        || tokio::fs::metadata(&full_path).await?.len() != file_size
-    {
-        stream.write_u64(0).await?;
     }
 
     // Create parent directories
@@ -124,8 +129,14 @@ pub async fn receive_file(
         .map(|m| m.is_file())
         .unwrap_or(false)
     {
-        let file_name = full_path.file_name().unwrap().to_str().unwrap();
-        let new_name = format!("({}) {}", counter, file_name);
+        let original_name = full_path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        let extension = full_path.extension().and_then(|s| s.to_str());
+
+        let new_name = if let Some(ext) = extension {
+            format!("{} ({}).{}", original_name, counter, ext)
+        } else {
+            format!("{} ({})", original_name, counter)
+        };
         full_path.pop();
         full_path.push(new_name);
         counter += 1;
