@@ -312,34 +312,79 @@ pub async fn run_sender(
     Ok(())
 }
 
+pub struct FileHandle {
+    pub file: std::fs::File,
+    pub path: String,
+    pub size: u64,
+}
+// For single file: pass vec with one item and folder_name as None
+// For folder: pass vec with multiple items and folder_name as Some(name)
 pub async fn run_sender_from_handle(
-    file: std::fs::File,
-    filename: &str,
+    files: Vec<FileHandle>,
+    folder_name: Option<&str>,
     password: &str,
     connection_mode: ConnectionMode,
     port: u16,
     progress_tx: Option<Sender<u8>>,
 ) -> anyhow::Result<()> {
-    let size = file.metadata()?.len();
-    let tokio_file = tokio::fs::File::from_std(file);
+    if files.is_empty() {
+        anyhow::bail!("No files to send");
+    }
+
     let (mut stream, _mdns) = establish_connection(&connection_mode, port).await?;
 
     let transfer_result = async {
-        let key = utils::send_handshake(&mut stream, VERSION, password, 1, false, None).await?;
-
-        println!("\n===========================================");
-        println!("File 1 of 1");
-        println!("===========================================");
-        send::send_file(
+        let is_folder = folder_name.is_some();
+        let key = utils::send_handshake(
             &mut stream,
-            tokio_file,
-            filename,
-            size,
-            &key,
-            true,
-            progress_tx,
+            VERSION,
+            password,
+            files.len() as u64,
+            is_folder,
+            folder_name,
         )
         .await?;
+
+        let is_single_file = files.len() == 1 && !is_folder;
+        let total_files = files.len();
+
+        for (i, file_handle) in files.into_iter().enumerate() {
+            println!("\n===========================================");
+            println!("File {} of {}", i + 1, total_files);
+            println!("===========================================");
+
+            let tokio_file = tokio::fs::File::from_std(file_handle.file);
+
+            // Create per-file progress that contributes to overall progress
+            let file_progress_tx = if let Some(ref tx) = progress_tx {
+                let tx = tx.clone();
+                let (file_tx, mut file_rx) = tokio::sync::mpsc::channel::<u8>(32);
+
+                tokio::spawn(async move {
+                    while let Some(file_percent) = file_rx.recv().await {
+                        let overall = ((i as f64 + file_percent as f64 / 100.0)
+                            / total_files as f64
+                            * 100.0) as u8;
+                        let _ = tx.try_send(overall);
+                    }
+                });
+
+                Some(file_tx)
+            } else {
+                None
+            };
+
+            send::send_file(
+                &mut stream,
+                tokio_file,
+                &file_handle.path,
+                file_handle.size,
+                &key,
+                is_single_file,
+                file_progress_tx,
+            )
+            .await?;
+        }
 
         Ok::<(), anyhow::Error>(())
     }

@@ -91,9 +91,9 @@ function SendPage() {
       const result = await invoke<[string, string] | null>("pick_file");
 
       if (result) {
-        const [uri, _filename] = result;
+        const [uri, filename] = result;
         setSelectedFile(uri);
-        setSelectedFileName(uri);
+        setSelectedFileName(filename);
       }
     } catch (error) {
       console.error("Failed to select file:", error);
@@ -110,9 +110,9 @@ function SendPage() {
       const result = await invoke<[string, string] | null>("pick_folder");
 
       if (result) {
-        const [uri, _foldername] = result;
+        const [uri, foldername] = result;
         setSelectedFile(uri);
-        setSelectedFileName(uri);
+        setSelectedFileName(foldername);
       }
     } catch (error) {
       console.error("Failed to select folder:", error);
@@ -204,7 +204,7 @@ function SendPage() {
       const store = await Store.load("settings.json");
       let port = await store.get<number>("port");
       if (!port) port = 3290;
-      await invoke("send_file_from_uri", {
+      await invoke("send_file", {
         fileUri: selectedFile,
         password: sendPassword,
         connectionMode,
@@ -244,10 +244,6 @@ function SendPage() {
 
   return (
     <Box sx={{ p: 2, pt: 3 }}>
-      <Alert severity="warning" sx={{ mb: 3 }}>
-        Android: Sending folders is not supported yet, please select files only
-      </Alert>
-
       <Box sx={{ mb: 3 }}>
         <Typography variant="body2" color="text.secondary" gutterBottom>
           File or Folder to Send
@@ -266,26 +262,24 @@ function SendPage() {
             size="small"
             title={selectedFileName}
           />
-          <Button
-            variant="contained"
-            startIcon={<FileIcon />}
+          <IconButton
+            color="primary"
             onClick={handleFileSelect}
             disabled={isSending}
-            size="small"
-            sx={{ whiteSpace: "nowrap", minWidth: "auto", px: 2 }}
+            size="medium"
+            title="Select file"
           >
-            FILE
-          </Button>
-          <Button
-            variant="contained"
-            startIcon={<FolderIcon />}
+            <FileIcon />
+          </IconButton>
+          <IconButton
+            color="primary"
             onClick={handleFolderSelect}
             disabled={isSending}
-            size="small"
-            sx={{ whiteSpace: "nowrap", minWidth: "auto", px: 2 }}
+            size="medium"
+            title="Select folder"
           >
-            FOLDER
-          </Button>
+            <FolderIcon />
+          </IconButton>
         </Box>
       </Box>
 
