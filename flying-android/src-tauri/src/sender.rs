@@ -46,7 +46,7 @@ pub async fn send_file(
     connection_mode: ConnectionMode,
     connect_ip: Option<String>,
     port: u16,
-    app: tauri::AppHandle,
+    _app: tauri::AppHandle,
     window: tauri::Window,
     state: tauri::State<'_, Arc<Mutex<TransferState>>>,
 ) -> Result<(), String> {

@@ -1,6 +1,6 @@
 [package]
 name = "flying-android"
-version = "0.4.6"
+version = "0.4.7"
 description = "A simple, secure, and fast file transfer tool"
 authors = ["wpcRaskolnikov <22pcwang@stu.edu.cn>"]
 edition = "2024"
