@@ -244,6 +244,7 @@ function SendPage() {
 
   return (
     <Box sx={{ p: 2, pt: 3 }}>
+      <Typography variant="h6">Send File</Typography>
       <Box sx={{ mb: 3 }}>
         <Typography variant="body2" color="text.secondary" gutterBottom>
           File or Folder to Send

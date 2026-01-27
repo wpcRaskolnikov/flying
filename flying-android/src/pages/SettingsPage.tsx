@@ -116,10 +116,7 @@ function SettingsPage() {
 
   return (
     <Box sx={{ p: 2, pt: 3 }}>
-      <Typography variant="h5" gutterBottom sx={{ fontWeight: 600, mb: 3 }}>
-        Settings
-      </Typography>
-
+      <Typography variant="h6">Settings</Typography>
       <Paper sx={{ p: 2, mb: 2 }}>
         <Typography variant="subtitle1" gutterBottom sx={{ fontWeight: 500 }}>
           Default Receive Folder

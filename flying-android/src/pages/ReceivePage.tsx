@@ -251,11 +251,7 @@ function ReceivePage() {
 
   return (
     <Box sx={{ p: 2, pt: 3 }}>
-      <SnackbarAlert severity="info" sx={{ mb: 3 }}>
-        Android: Files will be saved to Download folder, please select any
-        folder below to continue
-      </SnackbarAlert>
-
+      <Typography variant="h6">Receive File</Typography>
       <Box sx={{ mb: 3 }}>
         <Typography variant="body2" color="text.secondary" gutterBottom>
           Output Folder
@@ -385,6 +381,9 @@ function ReceivePage() {
           STOP
         </Button>
       )}
+      <SnackbarAlert severity="info" sx={{ mt: 3 }}>
+        Android: Files will be saved to Download folder
+      </SnackbarAlert>
 
       <Snackbar
         open={snackbar.open}
