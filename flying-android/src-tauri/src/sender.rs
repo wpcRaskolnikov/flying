@@ -1,20 +1,14 @@
+use crate::TransferState;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tauri::Emitter;
 use tokio::sync::Mutex;
 
 #[cfg(target_os = "android")]
-use tauri_plugin_android_fs::{AndroidFsExt, Entry, FileUri};
-
-use crate::TransferState;
-
-// Structure to hold file information from Android URI
-#[cfg(target_os = "android")]
-struct AndroidFileEntry {
-    uri: FileUri,
-    relative_path: String,
-    size: u64,
-}
+use {
+    tauri_plugin_android_fs::{AndroidFsExt, Entry, FileUri},
+    tokio::{io::AsyncWriteExt, sync::mpsc::Sender},
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -52,7 +46,7 @@ pub async fn send_file(
     connection_mode: ConnectionMode,
     connect_ip: Option<String>,
     port: u16,
-    _app: tauri::AppHandle,
+    app: tauri::AppHandle,
     window: tauri::Window,
     state: tauri::State<'_, Arc<Mutex<TransferState>>>,
 ) -> Result<(), String> {
@@ -65,102 +59,31 @@ pub async fn send_file(
 
         #[cfg(target_os = "android")]
         let result: Result<(), String> = async {
-            use tauri_plugin_android_fs::{AndroidFsExt, FileUri};
-
-            let api = _app.android_fs_async();
             let uri = FileUri::from_json_str(&file_uri)
                 .map_err(|e| format!("Failed to parse URI: {}", e))?;
 
-            let metadata = api
-                .get_metadata(&uri)
-                .await
-                .map_err(|e| format!("Failed to get metadata: {}", e))?;
+            let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(32);
+            let window_clone = window.clone();
 
-            if metadata.is_dir() {
-                let folder_name = api
-                    .get_name(&uri)
-                    .await
-                    .map_err(|e| format!("Failed to get folder name: {}", e))?;
-
-                let files = collect_android_files(&_app, &uri, "".to_string())
-                    .await
-                    .map_err(|e| format!("Failed to collect files: {}", e))?;
-
-                if files.is_empty() {
-                    return Err("No files found in folder".to_string());
+            tokio::spawn(async move {
+                while let Some(percent) = progress_rx.recv().await {
+                    let _ = window_clone.emit("send-progress", percent);
                 }
+            });
 
-                let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(32);
-                let window_clone = window.clone();
-
-                tokio::spawn(async move {
-                    while let Some(percent) = progress_rx.recv().await {
-                        let _ = window_clone.emit("send-progress", percent);
-                    }
-                });
-
-                tokio::select! {
-                    _ = abort_registration => {
-                        Err("Transfer cancelled".to_string())
-                    }
-                    result = send_android_folder(
-                        &_app,
-                        files,
-                        &folder_name,
-                        &password,
-                        mode,
-                        port,
-                        Some(progress_tx)
-                    ) => {
-                        result.map_err(|e| format!("Send error: {}", e))
-                    }
+            tokio::select! {
+                _ = abort_registration => {
+                    Err("Transfer cancelled".to_string())
                 }
-            } else {
-                // Handle single file
-                let file_name = api
-                    .get_name(&uri)
-                    .await
-                    .map_err(|e| format!("Failed to get file name: {}", e))?;
-
-                let source_file = api
-                    .open_file_readable(&uri)
-                    .await
-                    .map_err(|e| format!("Failed to open file: {}", e))?;
-
-                let file_size = api
-                    .get_metadata(&uri)
-                    .await
-                    .map_err(|e| format!("Failed to get file size: {}", e))?
-                    .len();
-
-                let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(32);
-                let window_clone = window.clone();
-
-                tokio::spawn(async move {
-                    while let Some(percent) = progress_rx.recv().await {
-                        let _ = window_clone.emit("send-progress", percent);
-                    }
-                });
-                let folder_name = file_name.clone();
-
-                tokio::select! {
-                    _ = abort_registration => {
-                        Err("Transfer cancelled".to_string())
-                    }
-                    result = flying::run_sender_from_handle(
-                        vec![flying::FileHandle {
-                            file: source_file,
-                            path: file_name,
-                            size: file_size,
-                        }],
-                        &folder_name,
-                        &password,
-                        mode,
-                        port,
-                        Some(progress_tx)
-                    ) => {
-                        result.map_err(|e| format!("Send error: {}", e))
-                    }
+                result = run_send_android(
+                    &_app,
+                    &uri,
+                    &password,
+                    mode,
+                    port,
+                    Some(progress_tx)
+                ) => {
+                    result
                 }
             }
         }
@@ -207,54 +130,100 @@ pub async fn send_file(
 }
 
 #[cfg(target_os = "android")]
-async fn collect_android_files(
+async fn run_send_android(
     app: &tauri::AppHandle,
-    dir_uri: &FileUri,
-    current_path: String,
-) -> Result<Vec<AndroidFileEntry>, String> {
+    uri: &FileUri,
+    password: &str,
+    mode: flying::ConnectionMode,
+    port: u16,
+    progress_tx: Option<Sender<u8>>,
+) -> Result<(), String> {
     let api = app.android_fs_async();
-    let mut files = Vec::new();
 
-    let entries = api
-        .read_dir(dir_uri)
+    let metadata = api
+        .get_metadata(uri)
         .await
-        .map_err(|e| format!("Failed to read directory: {}", e))?;
+        .map_err(|e| format!("Failed to get metadata: {}", e))?;
 
-    for entry in entries {
-        match entry {
-            Entry::File { uri, name, len, .. } => {
-                let relative_path = if current_path.is_empty() {
-                    name
-                } else {
-                    format!("{}/{}", current_path, name)
-                };
-                files.push(AndroidFileEntry {
-                    uri,
-                    relative_path,
-                    size: len,
-                });
-            }
-            Entry::Dir { uri, name, .. } => {
-                let sub_path = if current_path.is_empty() {
-                    name
-                } else {
-                    format!("{}/{}", current_path, name)
-                };
-                let mut sub_files = Box::pin(collect_android_files(app, &uri, sub_path)).await?;
-                files.append(&mut sub_files);
-            }
-        }
+    if metadata.is_dir() {
+        send_folder_android(app, uri, password, mode, port, progress_tx).await
+    } else {
+        send_file_android(app, uri, password, mode, port, progress_tx).await
     }
-
-    Ok(files)
 }
 
-// Send folder from Android using the flying protocol
 #[cfg(target_os = "android")]
-async fn send_android_folder(
+async fn send_file_android(
     app: &tauri::AppHandle,
-    files: Vec<AndroidFileEntry>,
-    folder_name: &str,
+    uri: &FileUri,
+    password: &str,
+    mode: flying::ConnectionMode,
+    port: u16,
+    progress_tx: Option<Sender<u8>>,
+) -> Result<(), String> {
+    let api = app.android_fs_async();
+
+    let file_name = api
+        .get_name(uri)
+        .await
+        .map_err(|e| format!("Failed to get file name: {}", e))?;
+
+    let source_file = api
+        .open_file_readable(uri)
+        .await
+        .map_err(|e| format!("Failed to open file: {}", e))?;
+
+    let file_size = api
+        .get_metadata(uri)
+        .await
+        .map_err(|e| format!("Failed to get file size: {}", e))?
+        .len();
+
+    let (mut stream, _mdns_daemon) = flying::establish_connection(&mode, port)
+        .await
+        .map_err(|e| format!("Failed to establish connection: {}", e))?;
+
+    // Send handshake
+    let key = flying::utils::send_handshake(
+        &mut stream,
+        flying::VERSION,
+        password,
+        &file_name,
+        false, // is_folder = false for single file
+    )
+    .await
+    .map_err(|e| format!("Handshake failed: {}", e))?;
+
+    let mut tokio_file = tokio::fs::File::from_std(source_file);
+    flying::send::send_metadata(&mut stream, &file_name, file_size)
+        .await
+        .map_err(|e| format!("Failed to send metadata: {}", e))?;
+
+    let is_duplicate = flying::send::check_duplicate(&mut stream, &mut tokio_file)
+        .await
+        .map_err(|e| format!("Failed to check duplicate: {}", e))?;
+    if !is_duplicate {
+        flying::send::encrypt_and_send(&mut stream, tokio_file, file_size, &key, progress_tx)
+            .await
+            .map_err(|e| format!("Failed to send file: {}", e))?;
+    }
+
+    stream
+        .shutdown()
+        .await
+        .map_err(|e| format!("Failed to shutdown stream: {}", e))?;
+
+    if let Some(mdns_daemon) = _mdns_daemon {
+        let _ = mdns_daemon.shutdown();
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "android")]
+async fn send_folder_android(
+    app: &tauri::AppHandle,
+    uri: &FileUri,
     password: &str,
     mode: flying::ConnectionMode,
     port: u16,
@@ -262,24 +231,103 @@ async fn send_android_folder(
 ) -> Result<(), String> {
     let api = app.android_fs_async();
 
-    // Open all files and prepare them for sending
-    let mut file_handles = Vec::new();
+    let folder_name = api
+        .get_name(uri)
+        .await
+        .map_err(|e| format!("Failed to get folder name: {}", e))?;
 
-    for file_entry in files {
-        let std_file = api
-            .open_file_readable(&file_entry.uri)
+    let (mut stream, _mdns_daemon) = flying::establish_connection(&mode, port)
+        .await
+        .map_err(|e| format!("Failed to establish connection: {}", e))?;
+
+    let key =
+        flying::utils::send_handshake(&mut stream, flying::VERSION, password, &folder_name, true)
             .await
-            .map_err(|e| format!("Failed to open file {}: {}", file_entry.relative_path, e))?;
+            .map_err(|e| format!("Handshake failed: {}", e))?;
 
-        file_handles.push(flying::FileHandle {
-            file: std_file,
-            path: file_entry.relative_path,
-            size: file_entry.size,
-        });
+    // Recursive send function
+    async fn send_recursive(
+        app: &tauri::AppHandle,
+        stream: &mut tokio::net::TcpStream,
+        dir_uri: &FileUri,
+        base_path: &str,
+        key: &ring::aead::LessSafeKey,
+        progress_tx: &Option<tokio::sync::mpsc::Sender<u8>>,
+    ) -> Result<(), String> {
+        let api = app.android_fs_async();
+
+        let entries = api
+            .read_dir(dir_uri)
+            .await
+            .map_err(|e| format!("Failed to read directory: {}", e))?;
+        for entry in entries {
+            match entry {
+                Entry::File { uri, name, len, .. } => {
+                    let relative_path = if base_path.is_empty() {
+                        name
+                    } else {
+                        format!("{}/{}", base_path, name)
+                    };
+
+                    flying::send::send_metadata(stream, &relative_path, len)
+                        .await
+                        .map_err(|e| format!("Failed to send metadata: {}", e))?;
+
+                    let file = api
+                        .open_file_readable(&uri)
+                        .await
+                        .map_err(|e| format!("Failed to open file {}: {}", relative_path, e))?;
+                    let tokio_file = tokio::fs::File::from_std(file);
+
+                    flying::send::encrypt_and_send(
+                        stream,
+                        tokio_file,
+                        len,
+                        key,
+                        progress_tx.clone(),
+                    )
+                    .await
+                    .map_err(|e| format!("Failed to send file {}: {}", relative_path, e))?;
+                }
+                Entry::Dir { uri, name, .. } => {
+                    let sub_path = if base_path.is_empty() {
+                        name
+                    } else {
+                        format!("{}/{}", base_path, name)
+                    };
+
+                    Box::pin(send_recursive(
+                        app,
+                        stream,
+                        &uri,
+                        &sub_path,
+                        key,
+                        progress_tx,
+                    ))
+                    .await?;
+                }
+            }
+        }
+
+        Ok(())
     }
 
-    // Use flying's run_sender_from_handle which handles everything
-    flying::run_sender_from_handle(file_handles, folder_name, password, mode, port, progress_tx)
+    send_recursive(app, &mut stream, uri, "", &key, &progress_tx).await?;
+
+    // Send end signal
+    stream
+        .write_u64(0)
         .await
-        .map_err(|e| format!("Send error: {}", e))
+        .map_err(|e| format!("Failed to send end signal: {}", e))?;
+
+    stream
+        .shutdown()
+        .await
+        .map_err(|e| format!("Failed to shutdown stream: {}", e))?;
+
+    if let Some(mdns_daemon) = _mdns_daemon {
+        let _ = mdns_daemon.shutdown();
+    }
+
+    Ok(())
 }

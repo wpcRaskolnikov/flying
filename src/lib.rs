@@ -1,7 +1,7 @@
 pub mod mdns;
 mod receive;
-mod send;
-mod utils;
+pub mod send;
+pub mod utils;
 use mdns_sd::ServiceDaemon;
 use std::net::{IpAddr, SocketAddr};
 use std::path::Path;
@@ -65,7 +65,7 @@ fn select_service(services: &[mdns::DiscoveredService]) -> Option<&mdns::Discove
     }
 }
 
-async fn establish_connection(
+pub async fn establish_connection(
     mode: &ConnectionMode,
     port: u16,
 ) -> anyhow::Result<(TcpStream, Option<ServiceDaemon>)> {
@@ -235,119 +235,4 @@ pub async fn run_sender_persistent(
         let _ = _mdns_daemon.shutdown();
         Ok(())
     }
-}
-
-pub struct FileHandle {
-    pub file: std::fs::File,
-    pub path: String,
-    pub size: u64,
-}
-
-pub async fn run_sender_from_handle(
-    files: Vec<FileHandle>,
-    relative_path: &str,
-    password: &str,
-    connection_mode: ConnectionMode,
-    port: u16,
-    progress_tx: Option<Sender<u8>>,
-) -> anyhow::Result<()> {
-    if files.is_empty() {
-        anyhow::bail!("No files to send");
-    }
-
-    let (mut stream, _mdns_daemon) = establish_connection(&connection_mode, port).await?;
-
-    let transfer_result = async {
-        let is_folder = files.len() > 1;
-
-        let key =
-            utils::send_handshake(&mut stream, VERSION, password, relative_path, is_folder).await?;
-
-        let check_duplicate_flag = !is_folder;
-        let total_files = files.len();
-
-        for (i, file_handle) in files.into_iter().enumerate() {
-            if total_files > 1 {
-                println!("[{}] Sending...", i + 1);
-            }
-
-            let tokio_file = tokio::fs::File::from_std(file_handle.file);
-
-            let file_progress_tx = if let Some(ref tx) = progress_tx {
-                let tx = tx.clone();
-                let (file_tx, mut file_rx) = tokio::sync::mpsc::channel::<u8>(32);
-
-                tokio::spawn(async move {
-                    while let Some(file_percent) = file_rx.recv().await {
-                        let overall = ((i as f64 + file_percent as f64 / 100.0)
-                            / total_files as f64
-                            * 100.0) as u8;
-                        let _ = tx.try_send(overall);
-                    }
-                });
-
-                Some(file_tx)
-            } else {
-                None
-            };
-
-            // Send file
-            println!(
-                "Sending: {} ({})",
-                file_handle.path,
-                humansize::format_size(file_handle.size, humansize::BINARY)
-            );
-
-            send::send_metadata(&mut stream, &file_handle.path, file_handle.size).await?;
-
-            if check_duplicate_flag {
-                let mut temp_file = tokio_file;
-                if send::check_duplicate(&mut stream, &mut temp_file).await? {
-                    println!("Recipient already has this file, skipping.");
-                    continue;
-                }
-                send::encrypt_and_send(
-                    &mut stream,
-                    temp_file,
-                    file_handle.size,
-                    &key,
-                    file_progress_tx,
-                )
-                .await?;
-            } else {
-                send::encrypt_and_send(
-                    &mut stream,
-                    tokio_file,
-                    file_handle.size,
-                    &key,
-                    file_progress_tx,
-                )
-                .await?;
-            }
-        }
-
-        // Send end signal if it's a folder
-        if is_folder {
-            stream.write_u64(0).await?;
-        }
-
-        Ok::<(), anyhow::Error>(())
-    }
-    .await;
-
-    match transfer_result {
-        Ok(_) => {
-            println!("\nTransfer complete!");
-        }
-        Err(e) => {
-            eprintln!("\nTransfer error: {}", e);
-            return Err(e);
-        }
-    }
-
-    stream.shutdown().await?;
-    if let Some(mdns_daemon) = _mdns_daemon {
-        let _ = mdns_daemon.shutdown();
-    }
-    Ok(())
 }
