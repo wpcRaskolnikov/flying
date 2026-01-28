@@ -10,7 +10,7 @@ import {
   Typography,
   LinearProgress,
   Snackbar,
-  Alert as SnackbarAlert,
+  Alert,
   IconButton,
 } from "@mui/material";
 import {
@@ -24,7 +24,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { Store } from "@tauri-apps/plugin-store";
-import { downloadDir } from "@tauri-apps/api/path";
 
 type ConnectionMode = "listen" | "connect";
 
@@ -45,21 +44,9 @@ function ReceivePage() {
   });
 
   useEffect(() => {
-    // Load default folder from store
     const loadDefaultFolder = async () => {
       try {
-        const store = await Store.load("settings.json");
-        let folderPath = await store.get<string>("default_folder_path");
-
-        // Initialize with Download folder if not set
-        if (!folderPath) {
-          folderPath = await downloadDir();
-
-          // Save to store
-          await store.set("default_folder_path", folderPath);
-          await store.save();
-        }
-
+        const folderPath = await invoke<string>("get_default_folder");
         setOutputDirName(folderPath);
         setOutputDirUri(folderPath);
       } catch (error) {
@@ -270,16 +257,15 @@ function ReceivePage() {
             size="small"
             title={outputDirName || ""}
           />
-          <Button
-            variant="contained"
-            startIcon={<FolderIcon />}
+          <IconButton
+            color="primary"
             onClick={handlePickFolder}
             disabled={isReceiving}
-            size="small"
-            sx={{ whiteSpace: "nowrap", minWidth: "auto", px: 2 }}
+            size="medium"
+            title="Select folder"
           >
-            SELECT
-          </Button>
+            <FolderIcon />
+          </IconButton>
         </Box>
       </Box>
 
@@ -381,10 +367,6 @@ function ReceivePage() {
           STOP
         </Button>
       )}
-      <SnackbarAlert severity="info" sx={{ mt: 3 }}>
-        Android: Files will be saved to Download folder
-      </SnackbarAlert>
-
       <Snackbar
         open={snackbar.open}
         autoHideDuration={3000}
@@ -392,9 +374,9 @@ function ReceivePage() {
         anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
         sx={{ bottom: 72 }}
       >
-        <SnackbarAlert severity={snackbar.severity} sx={{ width: "100%" }}>
+        <Alert severity={snackbar.severity} sx={{ width: "100%" }}>
           {snackbar.message}
-        </SnackbarAlert>
+        </Alert>
       </Snackbar>
     </Box>
   );

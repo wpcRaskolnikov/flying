@@ -1,21 +1,19 @@
 import { useState, useEffect } from "react";
 import {
   Box,
-  Button,
   TextField,
   Typography,
   Snackbar,
   Alert,
-  Paper,
+  IconButton,
 } from "@mui/material";
-import { Folder as FolderIcon } from "@mui/icons-material";
+import { Folder as FolderIcon, Save as SaveIcon } from "@mui/icons-material";
 import { invoke } from "@tauri-apps/api/core";
 import { Store } from "@tauri-apps/plugin-store";
-import { downloadDir } from "@tauri-apps/api/path";
 
 function SettingsPage() {
   const [defaultFolder, setDefaultFolder] = useState<string>("");
-  const [store, setStore] = useState<Store | null>(null);
+  const [port, setPort] = useState<number>(3290);
   const [snackbar, setSnackbar] = useState({
     open: false,
     message: "",
@@ -23,44 +21,36 @@ function SettingsPage() {
   });
 
   useEffect(() => {
-    const initStore = async () => {
-      const storeInstance = await Store.load("settings.json");
-      setStore(storeInstance);
-      await loadSettings(storeInstance);
-    };
-    initStore();
+    loadSettings();
   }, []);
 
-  const loadSettings = async (storeInstance: Store) => {
+  const loadSettings = async () => {
     try {
-      let folderPath = await storeInstance.get<string>("default_folder_path");
-
-      // Initialize with Download folder if not set
-      if (!folderPath) {
-        folderPath = await downloadDir();
-
-        // Save to store
-        await storeInstance.set("default_folder_path", folderPath);
-        await storeInstance.save();
-      }
-
+      const folderPath = await invoke<string>("get_default_folder");
       setDefaultFolder(folderPath);
+
+      // Load port from store
+      const storeInstance = await Store.load("settings.json");
+      const savedPort = await storeInstance.get<number>("port");
+      if (savedPort) {
+        setPort(savedPort);
+      }
     } catch (error) {
       console.error("Failed to load settings:", error);
     }
   };
 
   const handleSelectFolder = async () => {
-    if (!store) return;
-
     try {
       const result = await invoke<[string, string] | null>("pick_folder");
       if (result) {
         const [uri, _name] = result;
         setDefaultFolder(uri);
 
-        await store.set("default_folder_path", uri);
-        await store.save();
+        // Reload store to ensure valid resource
+        const storeInstance = await Store.load("settings.json");
+        await storeInstance.set("default_folder_path", uri);
+        await storeInstance.save();
 
         setSnackbar({
           open: true,
@@ -80,14 +70,9 @@ function SettingsPage() {
 
   const handleSavePort = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!store) return;
-
-    const formData = new FormData(event.currentTarget);
-    const portValue = formData.get("port") as string;
 
     try {
-      const portNumber = parseInt(portValue, 10);
-      if (isNaN(portNumber) || portNumber < 1 || portNumber > 65535) {
+      if (isNaN(port) || port < 1 || port > 65535) {
         setSnackbar({
           open: true,
           message: "Port must be between 1 and 65535",
@@ -96,8 +81,10 @@ function SettingsPage() {
         return;
       }
 
-      await store.set("port", portNumber);
-      await store.save();
+      // Reload store to ensure valid resource
+      const storeInstance = await Store.load("settings.json");
+      await storeInstance.set("port", port);
+      await storeInstance.save();
 
       setSnackbar({
         open: true,
@@ -117,12 +104,12 @@ function SettingsPage() {
   return (
     <Box sx={{ p: 2, pt: 3 }}>
       <Typography variant="h6">Settings</Typography>
-      <Paper sx={{ p: 2, mb: 2 }}>
-        <Typography variant="subtitle1" gutterBottom sx={{ fontWeight: 500 }}>
+
+      <Box sx={{ mb: 3 }}>
+        <Typography variant="body2" color="text.secondary" gutterBottom>
           Default Receive Folder
         </Typography>
-
-        <Box sx={{ display: "flex", gap: 1, alignItems: "center" }}>
+        <Box sx={{ display: "flex", gap: 1 }}>
           <TextField
             fullWidth
             placeholder="Select default folder"
@@ -135,33 +122,32 @@ function SettingsPage() {
             size="small"
             title={defaultFolder}
           />
-          <Button
-            variant="contained"
-            startIcon={<FolderIcon />}
+          <IconButton
+            color="primary"
             onClick={handleSelectFolder}
-            size="small"
-            sx={{ whiteSpace: "nowrap", minWidth: "auto", px: 2 }}
+            size="medium"
+            title="Select folder"
           >
-            SELECT
-          </Button>
+            <FolderIcon />
+          </IconButton>
         </Box>
-      </Paper>
+      </Box>
 
-      <Paper sx={{ p: 2, mb: 2 }}>
-        <Typography variant="subtitle1" gutterBottom sx={{ fontWeight: 500 }}>
+      <Box sx={{ mb: 3 }}>
+        <Typography variant="body2" color="text.secondary" gutterBottom>
           Port Configuration
         </Typography>
-
         <Box
           component="form"
           onSubmit={handleSavePort}
-          sx={{ display: "flex", gap: 1, alignItems: "center" }}
+          sx={{ display: "flex", gap: 1 }}
         >
           <TextField
             name="port"
             fullWidth
             placeholder="Port number (1-65535)"
-            defaultValue="3290"
+            value={port}
+            onChange={(e) => setPort(Number(e.target.value))}
             size="small"
             type="number"
             slotProps={{
@@ -170,16 +156,16 @@ function SettingsPage() {
               },
             }}
           />
-          <Button
+          <IconButton
             type="submit"
-            variant="contained"
-            size="small"
-            sx={{ whiteSpace: "nowrap", minWidth: "auto", px: 2 }}
+            color="primary"
+            size="medium"
+            title="Save port"
           >
-            SAVE
-          </Button>
+            <SaveIcon />
+          </IconButton>
         </Box>
-      </Paper>
+      </Box>
 
       <Alert severity="info" sx={{ mt: 2 }}>
         Android: Files will be saved to the Download folder. The folder
