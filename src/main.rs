@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand};
 use flying::{ConnectionMode, run_receiver, run_sender, run_sender_persistent};
+use libp2p::{Multiaddr, PeerId};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
@@ -16,11 +17,15 @@ enum Commands {
         file: PathBuf,
         #[arg(short, long, conflicts_with = "connect")]
         listen: bool,
-        #[arg(short, long, value_name = "IP")]
+        #[arg(short, long, value_name = "IP", conflicts_with = "relay")]
         connect: Option<String>,
+        #[arg(long, value_name = "MULTIADDR", conflicts_with = "connect")]
+        relay: Option<Multiaddr>,
+        #[arg(long, value_name = "PEER_ID")]
+        remote_peer: Option<PeerId>,
         #[arg(short = 'r', long)]
         recursive: bool,
-        #[arg(short = 'P', long)]
+        #[arg(short = 'P', long, requires = "listen", conflicts_with = "relay")]
         persistent: bool,
         #[arg(short, long, default_value = "3290")]
         port: u16,
@@ -30,8 +35,12 @@ enum Commands {
     Receive {
         #[arg(short, long, conflicts_with = "connect")]
         listen: bool,
-        #[arg(short, long, value_name = "IP")]
+        #[arg(short, long, value_name = "IP", conflicts_with = "relay")]
         connect: Option<String>,
+        #[arg(long, value_name = "MULTIADDR", conflicts_with = "connect")]
+        relay: Option<Multiaddr>,
+        #[arg(long, value_name = "PEER_ID")]
+        remote_peer: Option<PeerId>,
         #[arg(short, long, default_value = "3290")]
         port: u16,
         password: Option<String>,
@@ -62,26 +71,47 @@ fn print_session_info(
             println!("Connection: Listening for incoming connections")
         }
         ConnectionMode::Connect(ip) => println!("Connection: Will connect to {}", ip),
+        ConnectionMode::RelayListen { relay_addr } => {
+            println!("Connection: Listening via relay at {}", relay_addr)
+        }
+        ConnectionMode::RelayDial {
+            relay_addr,
+            remote_peer_id,
+        } => {
+            println!(
+                "Connection: Dialing peer {} via relay at {}",
+                remote_peer_id, relay_addr
+            )
+        }
     }
     println!("===========================================\n");
 }
 
 fn get_or_prompt_password(connection_mode: &ConnectionMode, password: Option<String>) -> String {
     match connection_mode {
-        ConnectionMode::Listen => flying::generate_password(),
-        ConnectionMode::AutoDiscover | ConnectionMode::Connect(_) => {
-            password.unwrap_or_else(|| {
-                println!("Please enter password:");
-                let mut input = String::new();
-                std::io::stdin().read_line(&mut input).unwrap();
-                input.trim().to_string()
-            })
+        ConnectionMode::Listen | ConnectionMode::RelayListen { .. } => {
+            password.unwrap_or_else(|| flying::generate_password())
         }
+        ConnectionMode::AutoDiscover
+        | ConnectionMode::Connect(_)
+        | ConnectionMode::RelayDial { .. } => password.unwrap_or_else(|| {
+            println!("Please enter password:");
+            let mut input = String::new();
+            std::io::stdin().read_line(&mut input).unwrap();
+            input.trim().to_string()
+        }),
     }
 }
 
 #[tokio::main]
 async fn main() {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
+
     let cli = Cli::parse();
 
     match cli.command {
@@ -89,6 +119,8 @@ async fn main() {
             file,
             listen,
             connect,
+            relay,
+            remote_peer,
             recursive,
             persistent,
             port,
@@ -109,7 +141,12 @@ async fn main() {
                 std::process::exit(1);
             }
 
-            let connection_mode = ConnectionMode::from_params(listen, connect);
+            if relay.is_some() && !listen && remote_peer.is_none() {
+                eprintln!("Error: --remote-peer is required when using --relay without --listen");
+                std::process::exit(1);
+            }
+
+            let connection_mode = ConnectionMode::from_params(listen, connect, relay, remote_peer);
             let password = get_or_prompt_password(&connection_mode, password);
             print_session_info("SEND", &password, &connection_mode, None);
 
@@ -128,6 +165,8 @@ async fn main() {
         Commands::Receive {
             listen,
             connect,
+            relay,
+            remote_peer,
             port,
             password,
             output,
@@ -137,7 +176,12 @@ async fn main() {
                 std::process::exit(1);
             }
 
-            let connection_mode = ConnectionMode::from_params(listen, connect);
+            if relay.is_some() && !listen && remote_peer.is_none() {
+                eprintln!("Error: --remote-peer is required when using --relay without --listen");
+                std::process::exit(1);
+            }
+
+            let connection_mode = ConnectionMode::from_params(listen, connect, relay, remote_peer);
             let password = get_or_prompt_password(&connection_mode, password);
             print_session_info("RECEIVE", &password, &connection_mode, Some(&output));
 

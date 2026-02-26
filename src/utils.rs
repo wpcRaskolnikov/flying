@@ -1,3 +1,4 @@
+use crate::NetworkStream;
 use ring::{digest, hkdf, hmac};
 use socket2::{Domain, Protocol, Socket, Type};
 use spake2::{Ed25519Group, Identity, Password, Spake2};
@@ -7,7 +8,7 @@ use std::path::PathBuf;
 use tokio::{
     fs::File,
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
-    net::{TcpListener, TcpStream},
+    net::TcpListener,
     sync::mpsc::Sender,
 };
 const CHUNK_SIZE: usize = 1_048_576;
@@ -84,10 +85,9 @@ impl ProgressTracker {
     }
 }
 
-pub async fn version_handshake(stream: &mut TcpStream, version: u64) -> anyhow::Result<()> {
-    let (mut read_half, mut write_half) = stream.split();
-
-    let (_, peer_version) = tokio::try_join!(write_half.write_u64(version), read_half.read_u64())?;
+pub async fn version_handshake(stream: &mut dyn NetworkStream, version: u64) -> anyhow::Result<()> {
+    stream.write_u64(version).await?;
+    let peer_version = stream.read_u64().await?;
 
     if peer_version != version {
         println!(
@@ -99,10 +99,9 @@ pub async fn version_handshake(stream: &mut TcpStream, version: u64) -> anyhow::
     Ok(())
 }
 
-pub async fn mode_handshake(stream: &mut TcpStream, mode: u64) -> anyhow::Result<()> {
-    let (mut read_half, mut write_half) = stream.split();
-
-    let (_, peer_mode) = tokio::try_join!(write_half.write_u64(mode), read_half.read_u64())?;
+pub async fn mode_handshake(stream: &mut dyn NetworkStream, mode: u64) -> anyhow::Result<()> {
+    stream.write_u64(mode).await?;
+    let peer_mode = stream.read_u64().await?;
 
     if peer_mode == mode {
         anyhow::bail!("Mode mismatch: both sides in same mode");
@@ -112,7 +111,7 @@ pub async fn mode_handshake(stream: &mut TcpStream, mode: u64) -> anyhow::Result
 }
 
 pub async fn pake_handshake(
-    stream: &mut TcpStream,
+    stream: &mut dyn NetworkStream,
     password: &str,
     is_receiver: bool,
 ) -> anyhow::Result<[u8; SHARED_SECRET_SIZE]> {
@@ -130,13 +129,11 @@ pub async fn pake_handshake(
         )
     };
 
-    let (mut read_half, mut write_half) = stream.split();
-    let mut inbound_msg = vec![0u8; SPAKE2_MSG_SIZE];
+    stream.write_all(&outbound_msg).await?;
+    stream.flush().await?;
 
-    tokio::try_join!(
-        write_half.write_all(&outbound_msg),
-        read_half.read_exact(&mut inbound_msg)
-    )?;
+    let mut inbound_msg = vec![0u8; SPAKE2_MSG_SIZE];
+    stream.read_exact(&mut inbound_msg).await?;
 
     let shared_secret: [u8; SHARED_SECRET_SIZE] = state
         .finish(&inbound_msg)
@@ -172,11 +169,11 @@ pub async fn pake_handshake(
     };
 
     let our_tag = hmac::sign(&hmac_key, our_role);
+    stream.write_all(our_tag.as_ref()).await?;
+    stream.flush().await?;
+
     let mut peer_tag = vec![0u8; HMAC_TAG_SIZE];
-    tokio::try_join!(
-        write_half.write_all(our_tag.as_ref()),
-        read_half.read_exact(&mut peer_tag)
-    )?;
+    stream.read_exact(&mut peer_tag).await?;
 
     hmac::verify(&hmac_key, peer_role, &peer_tag)
         .map_err(|_| anyhow::anyhow!("Key confirmation failed: password mismatch"))?;
@@ -185,7 +182,7 @@ pub async fn pake_handshake(
 }
 
 pub async fn send_handshake(
-    stream: &mut TcpStream,
+    stream: &mut dyn NetworkStream,
     version: u64,
     password: &str,
     relative_path: &str,
@@ -198,6 +195,7 @@ pub async fn send_handshake(
     stream.write_u64(relative_path.len() as u64).await?;
     stream.write_all(relative_path.as_bytes()).await?;
     stream.write_u64(u64::from(is_folder)).await?;
+    stream.flush().await?;
 
     let unbound_key = ring::aead::UnboundKey::new(&ring::aead::AES_256_GCM, &key_bytes)
         .map_err(|_| anyhow::anyhow!("Failed to create encryption key"))?;
@@ -205,7 +203,7 @@ pub async fn send_handshake(
 }
 
 pub async fn receive_handshake(
-    stream: &mut TcpStream,
+    stream: &mut dyn NetworkStream,
     version: u64,
     password: &str,
 ) -> anyhow::Result<(ring::aead::LessSafeKey, String, bool)> {

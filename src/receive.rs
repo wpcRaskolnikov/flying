@@ -1,15 +1,14 @@
-use crate::utils;
+use crate::{NetworkStream, utils};
 use humansize::{BINARY, format_size};
 use ring::aead;
 use std::path::Path;
 use tokio::{
     fs::{self, File},
     io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpStream,
     sync::mpsc::Sender,
 };
 
-async fn receive_metadata(stream: &mut TcpStream) -> anyhow::Result<(String, u64)> {
+async fn receive_metadata(stream: &mut dyn NetworkStream) -> anyhow::Result<(String, u64)> {
     let filename_len = stream.read_u64().await? as usize;
     let mut filename_bytes = vec![0; filename_len];
     stream.read_exact(&mut filename_bytes).await?;
@@ -18,17 +17,17 @@ async fn receive_metadata(stream: &mut TcpStream) -> anyhow::Result<(String, u64
     Ok((filename, file_size))
 }
 
-async fn check_duplicate(stream: &mut TcpStream, file: &mut File) -> anyhow::Result<bool> {
+async fn check_duplicate(stream: &mut dyn NetworkStream, file: &mut File) -> anyhow::Result<bool> {
     stream.write_u64(1).await?;
+    stream.flush().await?;
 
-    let (mut read_half, mut write_half) = stream.split();
     let local_hash = utils::hash_file(file).await?;
-    let mut peer_hash = vec![0; 32];
 
-    tokio::try_join!(
-        write_half.write_all(local_hash.as_ref()),
-        read_half.read_exact(&mut peer_hash)
-    )?;
+    stream.write_all(local_hash.as_ref()).await?;
+    stream.flush().await?;
+
+    let mut peer_hash = vec![0; 32];
+    stream.read_exact(&mut peer_hash).await?;
 
     let matches = local_hash.as_ref() == &peer_hash[..];
 
@@ -36,7 +35,7 @@ async fn check_duplicate(stream: &mut TcpStream, file: &mut File) -> anyhow::Res
 }
 
 async fn decrypt_and_save(
-    stream: &mut TcpStream,
+    stream: &mut dyn NetworkStream,
     file: &mut File,
     size: u64,
     key: &aead::LessSafeKey,
@@ -81,7 +80,7 @@ async fn decrypt_and_save(
 }
 
 pub async fn receive_file(
-    stream: &mut TcpStream,
+    stream: &mut dyn NetworkStream,
     output_dir: &Path,
     key: &aead::LessSafeKey,
     progress_tx: Option<Sender<u8>>,
@@ -107,6 +106,7 @@ pub async fn receive_file(
         }
     } else {
         stream.write_u64(0).await?;
+        stream.flush().await?;
     }
 
     // Create parent directories
@@ -121,7 +121,7 @@ pub async fn receive_file(
 }
 
 pub async fn receive_folder(
-    stream: &mut TcpStream,
+    stream: &mut dyn NetworkStream,
     folder_path: &Path,
     key: &aead::LessSafeKey,
     progress_tx: Option<Sender<u8>>,

@@ -15,6 +15,10 @@ path = "src/lib.rs"
 name = "flying"
 path = "src/main.rs"
 
+[[bin]]
+name = "flying-relay"
+path = "src/libp2p_relay/main.rs"
+
 [package.metadata.wix]
 upgrade-guid = "6D0EA1A3-57AA-4A27-9E10-ABA76CAB0795"
 path-guid = "45D993CE-D3BF-4BD9-AFEC-7088078212E2"
@@ -33,6 +37,13 @@ ring = "0.17.14"
 socket2 = "0.6.1"
 spake2 = "0.4.0"
 tokio = { version = "1.48.0", features = ["full"] }
+
+libp2p = { version = "0.56", features = ["tokio", "tcp", "quic", "dns", "noise", "yamux", "relay", "dcutr", "identify", "ping", "macros"] }
+libp2p-stream = "0.4.0-alpha"
+futures = "0.3"
+tokio-util = { version = "0.7", features = ["compat"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # The profile that 'dist' will build with
 [profile.dist]

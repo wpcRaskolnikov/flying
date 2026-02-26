@@ -1,38 +1,40 @@
-use crate::utils;
+use crate::{NetworkStream, utils};
 use humansize::{BINARY, format_size};
 use ring::{aead, rand};
 use std::path::Path;
 use tokio::{
     fs::File,
     io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpStream,
     sync::mpsc::Sender,
 };
 
 const CHUNK_SIZE: usize = 1_048_576; // 1 MiB
 
 pub async fn send_metadata(
-    stream: &mut TcpStream,
+    stream: &mut dyn NetworkStream,
     filename: &str,
     size: u64,
 ) -> anyhow::Result<()> {
     stream.write_u64(filename.len() as u64).await?;
     stream.write_all(filename.as_bytes()).await?;
     stream.write_u64(size).await?;
+    stream.flush().await?;
     Ok(())
 }
 
-pub async fn check_duplicate(stream: &mut TcpStream, file: &mut File) -> anyhow::Result<bool> {
+pub async fn check_duplicate(
+    stream: &mut dyn NetworkStream,
+    file: &mut File,
+) -> anyhow::Result<bool> {
     let has_file = stream.read_u64().await?;
     if has_file == 1 {
-        let (mut read_half, mut write_half) = stream.split();
         let local_hash = utils::hash_file(file).await?;
-        let mut peer_hash = vec![0; 32];
 
-        tokio::try_join!(
-            write_half.write_all(local_hash.as_ref()),
-            read_half.read_exact(&mut peer_hash)
-        )?;
+        stream.write_all(local_hash.as_ref()).await?;
+        stream.flush().await?;
+
+        let mut peer_hash = vec![0; 32];
+        stream.read_exact(&mut peer_hash).await?;
 
         let matches = local_hash.as_ref() == &peer_hash[..];
         Ok(matches)
@@ -42,7 +44,7 @@ pub async fn check_duplicate(stream: &mut TcpStream, file: &mut File) -> anyhow:
 }
 
 pub async fn encrypt_and_send(
-    stream: &mut TcpStream,
+    stream: &mut dyn NetworkStream,
     mut file: File,
     size: u64,
     key: &aead::LessSafeKey,
@@ -86,13 +88,14 @@ pub async fn encrypt_and_send(
     }
 
     stream.write_u64(0).await?; // Signal end of file
+    stream.flush().await?;
     progress.finish()?;
 
     Ok(())
 }
 
 pub async fn send_file(
-    stream: &mut TcpStream,
+    stream: &mut dyn NetworkStream,
     file_path: &Path,
     key: &aead::LessSafeKey,
     progress_tx: Option<Sender<u8>>,
@@ -122,13 +125,13 @@ pub async fn send_file(
 }
 
 pub async fn send_folder(
-    stream: &mut TcpStream,
+    stream: &mut dyn NetworkStream,
     folder_path: &Path,
     key: &aead::LessSafeKey,
     progress_tx: Option<Sender<u8>>,
 ) -> anyhow::Result<()> {
     async fn send_recursive(
-        stream: &mut TcpStream,
+        stream: &mut dyn NetworkStream,
         current_dir: &Path,
         base_path: &Path,
         key: &aead::LessSafeKey,
@@ -164,6 +167,7 @@ pub async fn send_folder(
 
     // Send end signal (empty filename)
     stream.write_u64(0).await?;
+    stream.flush().await?;
 
     Ok(())
 }
