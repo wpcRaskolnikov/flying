@@ -17,7 +17,7 @@ path = "src/main.rs"
 
 [[bin]]
 name = "flying-relay"
-path = "src/libp2p_relay/main.rs"
+path = "src/flying_relay/main.rs"
 
 [package.metadata.wix]
 upgrade-guid = "6D0EA1A3-57AA-4A27-9E10-ABA76CAB0795"

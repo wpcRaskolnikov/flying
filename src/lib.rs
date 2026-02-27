@@ -1,23 +1,56 @@
 pub mod mdns;
 mod receive;
+pub mod relay;
 pub mod send;
 pub mod utils;
+
+use libp2p::{Multiaddr, PeerId};
 use mdns_sd::ServiceDaemon;
 use std::net::{IpAddr, SocketAddr};
 use std::path::Path;
-use tokio::{io::AsyncWriteExt, net::TcpStream, sync::mpsc::Sender};
+use tokio::{
+    io::{AsyncRead, AsyncWrite, AsyncWriteExt},
+    net::TcpStream,
+    sync::mpsc::Sender,
+};
+
 pub const VERSION: u64 = 5;
+
+pub trait NetworkStream: AsyncRead + AsyncWrite + Send + Unpin {}
+
+impl<T> NetworkStream for T where T: AsyncRead + AsyncWrite + Send + Unpin {}
 
 #[derive(Debug, Clone)]
 pub enum ConnectionMode {
     AutoDiscover,
     Listen,
     Connect(String),
+    RelayListen {
+        relay_addr: Multiaddr,
+    },
+    RelayDial {
+        relay_addr: Multiaddr,
+        remote_peer_id: PeerId,
+    },
 }
 
 impl ConnectionMode {
-    pub fn from_params(listen: bool, connect: Option<String>) -> Self {
-        if let Some(ip) = connect {
+    pub fn from_params(
+        listen: bool,
+        connect: Option<String>,
+        relay_addr: Option<Multiaddr>,
+        remote_peer_id: Option<PeerId>,
+    ) -> Self {
+        if let Some(relay) = relay_addr {
+            if let Some(peer) = remote_peer_id {
+                ConnectionMode::RelayDial {
+                    relay_addr: relay,
+                    remote_peer_id: peer,
+                }
+            } else {
+                ConnectionMode::RelayListen { relay_addr: relay }
+            }
+        } else if let Some(ip) = connect {
             ConnectionMode::Connect(ip)
         } else if listen {
             ConnectionMode::Listen
@@ -68,7 +101,7 @@ fn select_service(services: &[mdns::DiscoveredService]) -> Option<&mdns::Discove
 pub async fn establish_connection(
     mode: &ConnectionMode,
     port: u16,
-) -> anyhow::Result<(TcpStream, Option<ServiceDaemon>)> {
+) -> anyhow::Result<(Box<dyn NetworkStream>, Option<ServiceDaemon>)> {
     match mode {
         ConnectionMode::AutoDiscover => {
             println!("Searching for peers on the local network...\n");
@@ -79,7 +112,7 @@ pub async fn establish_connection(
                 println!("\nConnecting to {}...", addr);
                 let stream = TcpStream::connect(addr).await?;
                 println!("Connected!\n");
-                Ok((stream, None))
+                Ok((Box::new(stream) as Box<dyn NetworkStream>, None))
             } else {
                 anyhow::bail!("No peers found on the local network")
             }
@@ -92,7 +125,10 @@ pub async fn establish_connection(
             println!("Waiting for peer to connect...\n");
             let (stream, socket_addr) = listener.accept().await?;
             println!("Connection accepted from {}\n", socket_addr);
-            Ok((stream, Some(mdns_daemon)))
+            Ok((
+                Box::new(stream) as Box<dyn NetworkStream>,
+                Some(mdns_daemon),
+            ))
         }
         ConnectionMode::Connect(ip) => {
             let ip: IpAddr = ip.parse()?;
@@ -100,7 +136,18 @@ pub async fn establish_connection(
             println!("Connecting to {}...", addr);
             let stream = TcpStream::connect(addr).await?;
             println!("Connected!\n");
-            Ok((stream, None))
+            Ok((Box::new(stream) as Box<dyn NetworkStream>, None))
+        }
+        ConnectionMode::RelayListen { relay_addr } => {
+            let stream = relay::relay_listen(relay_addr.clone()).await?;
+            Ok((Box::new(stream) as Box<dyn NetworkStream>, None))
+        }
+        ConnectionMode::RelayDial {
+            relay_addr,
+            remote_peer_id,
+        } => {
+            let stream = relay::relay_dial(relay_addr.clone(), *remote_peer_id).await?;
+            Ok((Box::new(stream) as Box<dyn NetworkStream>, None))
         }
     }
 }
@@ -119,13 +166,13 @@ pub async fn run_receiver(
     let (mut stream, mdns_daemon) = establish_connection(&connection_mode, port).await?;
 
     let (key, relative_path, is_folder) =
-        utils::receive_handshake(&mut stream, VERSION, password).await?;
+        utils::receive_handshake(stream.as_mut(), VERSION, password).await?;
 
     if is_folder {
         let folder_path = output_dir.join(&relative_path);
-        receive::receive_folder(&mut stream, &folder_path, &key, progress_tx).await?;
+        receive::receive_folder(stream.as_mut(), &folder_path, &key, progress_tx).await?;
     } else {
-        receive::receive_file(&mut stream, output_dir, &key, progress_tx).await?;
+        receive::receive_file(stream.as_mut(), output_dir, &key, progress_tx).await?;
     }
 
     println!("\nTransfer complete!");
@@ -154,16 +201,317 @@ pub async fn run_sender(
 
     let (mut stream, mdns_daemon) = establish_connection(&connection_mode, port).await?;
 
-    let key =
-        utils::send_handshake(&mut stream, VERSION, password, &relative_path, is_folder).await?;
+    let key = utils::send_handshake(
+        stream.as_mut(),
+        VERSION,
+        password,
+        &relative_path,
+        is_folder,
+    )
+    .await?;
 
     if is_folder {
-        send::send_folder(&mut stream, file_path, &key, progress_tx).await?;
+        send::send_folder(stream.as_mut(), file_path, &key, progress_tx).await?;
     } else {
-        send::send_file(&mut stream, file_path, &key, progress_tx).await?;
+        send::send_file(stream.as_mut(), file_path, &key, progress_tx).await?;
     }
 
     println!("\nTransfer complete!");
+
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+    stream.shutdown().await?;
+    if let Some(mdns_daemon) = mdns_daemon {
+        let _ = mdns_daemon.shutdown();
+    }
+    Ok(())
+}
+
+pub async fn run_sender_persistent(
+    file_path: &Path,
+    password: &str,
+    port: u16,
+    progress_tx: Option<Sender<u8>>,
+) -> anyhow::Result<()> {
+    let is_folder = file_path.is_dir();
+
+    let relative_path = file_path
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("Invalid file/folder name"))?
+        .to_string_lossy()
+        .to_string();
+
+    let listener = utils::create_listener(port)?;
+    let _mdns_daemon = mdns::advertise_service(port)?;
+
+    let mut transfer_count = 0u32;
+    loop {
+        transfer_count += 1;
+
+        println!("\n===========================================");
+        println!("Transfer #{}", transfer_count);
+        println!("===========================================");
+
+        println!("Listening on [::]:{} (IPv4/IPv6 dual-stack)...", port);
+        println!("Waiting for peer to connect...\n");
+        let (mut stream, socket_addr) = listener.accept().await?;
+        println!("Connection accepted from {}\n", socket_addr);
+
+        let result = async {
+            let key =
+                utils::send_handshake(&mut stream, VERSION, password, &relative_path, is_folder)
+                    .await?;
+
+            if is_folder {
+                send::send_folder(&mut stream, file_path, &key, progress_tx.clone()).await?;
+            } else {
+                send::send_file(&mut stream, file_path, &key, progress_tx.clone()).await?;
+            }
+
+            println!("\nTransfer complete!");
+            stream.shutdown().await?;
+
+            Ok::<(), anyhow::Error>(())
+        }
+        .await;
+
+        match result {
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("\nTransfer error: {}", e);
+            }
+        }
+
+        println!("\nWaiting for next connection...");
+    }
+
+    #[allow(unreachable_code)]
+    {
+        let _ = _mdns_daemon.shutdown();
+        Ok(())
+    }
+}
+pub mod mdns;
+mod receive;
+pub mod relay;
+pub mod send;
+pub mod utils;
+
+use libp2p::{Multiaddr, PeerId};
+use mdns_sd::ServiceDaemon;
+use std::net::{IpAddr, SocketAddr};
+use std::path::Path;
+use tokio::{
+    io::{AsyncRead, AsyncWrite, AsyncWriteExt},
+    net::TcpStream,
+    sync::mpsc::Sender,
+};
+
+pub const VERSION: u64 = 5;
+
+pub trait NetworkStream: AsyncRead + AsyncWrite + Send + Unpin {}
+
+impl<T> NetworkStream for T where T: AsyncRead + AsyncWrite + Send + Unpin {}
+
+#[derive(Debug, Clone)]
+pub enum ConnectionMode {
+    AutoDiscover,
+    Listen,
+    Connect(String),
+    RelayListen {
+        relay_addr: Multiaddr,
+    },
+    RelayDial {
+        relay_addr: Multiaddr,
+        remote_peer_id: PeerId,
+    },
+}
+
+impl ConnectionMode {
+    pub fn from_params(
+        listen: bool,
+        connect: Option<String>,
+        relay_addr: Option<Multiaddr>,
+        remote_peer_id: Option<PeerId>,
+    ) -> Self {
+        if let Some(relay) = relay_addr {
+            if let Some(peer) = remote_peer_id {
+                ConnectionMode::RelayDial {
+                    relay_addr: relay,
+                    remote_peer_id: peer,
+                }
+            } else {
+                ConnectionMode::RelayListen { relay_addr: relay }
+            }
+        } else if let Some(ip) = connect {
+            ConnectionMode::Connect(ip)
+        } else if listen {
+            ConnectionMode::Listen
+        } else {
+            ConnectionMode::AutoDiscover
+        }
+    }
+}
+
+fn select_service(services: &[mdns::DiscoveredService]) -> Option<&mdns::DiscoveredService> {
+    if services.is_empty() {
+        println!("\nNo peers found on the network.");
+        println!("Make sure the peer is running and on the same network.");
+        return None;
+    }
+
+    println!("\nFound {} peer(s):", services.len());
+    for (i, service) in services.iter().enumerate() {
+        println!(
+            "  [{}] {} ({}:{})",
+            i + 1,
+            service.hostname,
+            service.ip,
+            service.port
+        );
+    }
+
+    if services.len() == 1 {
+        println!("\nAutomatically selecting the only available receiver.");
+        return Some(&services[0]);
+    }
+
+    println!("\nSelect a peer (1-{}):", services.len());
+
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input).ok()?;
+
+    let selection: usize = input.trim().parse().ok()?;
+
+    if selection > 0 && selection <= services.len() {
+        Some(&services[selection - 1])
+    } else {
+        println!("Invalid selection.");
+        None
+    }
+}
+
+pub async fn establish_connection(
+    mode: &ConnectionMode,
+    port: u16,
+) -> anyhow::Result<(Box<dyn NetworkStream>, Option<ServiceDaemon>)> {
+    match mode {
+        ConnectionMode::AutoDiscover => {
+            println!("Searching for peers on the local network...\n");
+            let services = mdns::discover_services(3)?;
+
+            if let Some(service) = select_service(&services) {
+                let addr = SocketAddr::new(service.ip, service.port);
+                println!("\nConnecting to {}...", addr);
+                let stream = TcpStream::connect(addr).await?;
+                println!("Connected!\n");
+                Ok((Box::new(stream) as Box<dyn NetworkStream>, None))
+            } else {
+                anyhow::bail!("No peers found on the local network")
+            }
+        }
+        ConnectionMode::Listen => {
+            let listener = utils::create_listener(port)?;
+            let mdns_daemon = mdns::advertise_service(port)?;
+
+            println!("Listening on [::]:{} (IPv4/IPv6 dual-stack)...", port);
+            println!("Waiting for peer to connect...\n");
+            let (stream, socket_addr) = listener.accept().await?;
+            println!("Connection accepted from {}\n", socket_addr);
+            Ok((
+                Box::new(stream) as Box<dyn NetworkStream>,
+                Some(mdns_daemon),
+            ))
+        }
+        ConnectionMode::Connect(ip) => {
+            let ip: IpAddr = ip.parse()?;
+            let addr = SocketAddr::new(ip, port);
+            println!("Connecting to {}...", addr);
+            let stream = TcpStream::connect(addr).await?;
+            println!("Connected!\n");
+            Ok((Box::new(stream) as Box<dyn NetworkStream>, None))
+        }
+        ConnectionMode::RelayListen { relay_addr } => {
+            let stream = relay::relay_listen(relay_addr.clone()).await?;
+            Ok((Box::new(stream) as Box<dyn NetworkStream>, None))
+        }
+        ConnectionMode::RelayDial {
+            relay_addr,
+            remote_peer_id,
+        } => {
+            let stream = relay::relay_dial(relay_addr.clone(), *remote_peer_id).await?;
+            Ok((Box::new(stream) as Box<dyn NetworkStream>, None))
+        }
+    }
+}
+
+pub fn generate_password() -> String {
+    petname::petname(3, "-").unwrap_or_else(|| "flying-transfer-secret".to_string())
+}
+
+pub async fn run_receiver(
+    output_dir: &Path,
+    password: &str,
+    connection_mode: ConnectionMode,
+    port: u16,
+    progress_tx: Option<Sender<u8>>,
+) -> anyhow::Result<()> {
+    let (mut stream, mdns_daemon) = establish_connection(&connection_mode, port).await?;
+
+    let (key, relative_path, is_folder) =
+        utils::receive_handshake(stream.as_mut(), VERSION, password).await?;
+
+    if is_folder {
+        let folder_path = output_dir.join(&relative_path);
+        receive::receive_folder(stream.as_mut(), &folder_path, &key, progress_tx).await?;
+    } else {
+        receive::receive_file(stream.as_mut(), output_dir, &key, progress_tx).await?;
+    }
+
+    println!("\nTransfer complete!");
+
+    stream.shutdown().await?;
+    if let Some(mdns_daemon) = mdns_daemon {
+        let _ = mdns_daemon.shutdown();
+    }
+    Ok(())
+}
+
+pub async fn run_sender(
+    file_path: &Path,
+    password: &str,
+    connection_mode: ConnectionMode,
+    port: u16,
+    progress_tx: Option<Sender<u8>>,
+) -> anyhow::Result<()> {
+    let is_folder = file_path.is_dir();
+
+    let relative_path = file_path
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("Invalid file/folder name"))?
+        .to_string_lossy()
+        .to_string();
+
+    let (mut stream, mdns_daemon) = establish_connection(&connection_mode, port).await?;
+
+    let key = utils::send_handshake(
+        stream.as_mut(),
+        VERSION,
+        password,
+        &relative_path,
+        is_folder,
+    )
+    .await?;
+
+    if is_folder {
+        send::send_folder(stream.as_mut(), file_path, &key, progress_tx).await?;
+    } else {
+        send::send_file(stream.as_mut(), file_path, &key, progress_tx).await?;
+    }
+
+    println!("\nTransfer complete!");
+
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
     stream.shutdown().await?;
     if let Some(mdns_daemon) = mdns_daemon {
