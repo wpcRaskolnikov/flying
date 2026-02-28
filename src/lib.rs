@@ -218,8 +218,6 @@ pub async fn run_sender(
 
     println!("\nTransfer complete!");
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-
     stream.shutdown().await?;
     if let Some(mdns_daemon) = mdns_daemon {
         let _ = mdns_daemon.shutdown();

@@ -1,17 +1,11 @@
 use clap::Parser;
 use futures::StreamExt;
 use libp2p::{
-    Multiaddr, PeerId,
-    core::multiaddr::Protocol,
-    identify, identity, noise, ping, relay,
+    Multiaddr, PeerId, identify, identity, noise, ping, relay,
     swarm::{NetworkBehaviour, SwarmEvent},
     tcp, yamux,
 };
-use std::{
-    error::Error,
-    net::{Ipv4Addr, Ipv6Addr},
-    time::Duration,
-};
+use std::{error::Error, time::Duration};
 
 #[derive(Parser, Debug)]
 #[command(name = "flying-relay")]
@@ -19,10 +13,6 @@ use std::{
 struct Opts {
     #[arg(long, default_value = "4001")]
     port: u16,
-
-    /// Use IPv6 instead of IPv4
-    #[arg(long)]
-    use_ipv6: bool,
 
     #[arg(long)]
     secret_key_seed: Option<u8>,
@@ -43,12 +33,9 @@ fn generate_ed25519(secret_key_seed: u8) -> identity::Keypair {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .try_init();
 
     let opts = Opts::parse();
 
@@ -87,23 +74,30 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(3600)))
         .build();
 
-    // Listen on all interfaces
-    let listen_addr_tcp = Multiaddr::empty()
-        .with(match opts.use_ipv6 {
-            true => Protocol::from(Ipv6Addr::UNSPECIFIED),
-            false => Protocol::from(Ipv4Addr::UNSPECIFIED),
-        })
-        .with(Protocol::Tcp(opts.port));
-    swarm.listen_on(listen_addr_tcp)?;
+    // Listen on all interfaces - both IPv4 and IPv6
+    // IPv4 listeners (required)
+    swarm.listen_on(
+        format!("/ip4/0.0.0.0/tcp/{}", opts.port)
+            .parse()
+            .expect("Invalid IPv4 TCP address"),
+    )?;
+    swarm.listen_on(
+        format!("/ip4/0.0.0.0/udp/{}/quic-v1", opts.port)
+            .parse()
+            .expect("Invalid IPv4 QUIC address"),
+    )?;
 
-    let listen_addr_quic = Multiaddr::empty()
-        .with(match opts.use_ipv6 {
-            true => Protocol::from(Ipv6Addr::UNSPECIFIED),
-            false => Protocol::from(Ipv4Addr::UNSPECIFIED),
-        })
-        .with(Protocol::Udp(opts.port))
-        .with(Protocol::QuicV1);
-    swarm.listen_on(listen_addr_quic)?;
+    // IPv6 listeners (optional, graceful degradation if not supported)
+    if let Ok(addr) = format!("/ip6/::/tcp/{}", opts.port).parse::<Multiaddr>() {
+        if let Err(e) = swarm.listen_on(addr) {
+            tracing::warn!("Failed to listen on IPv6 TCP: {}", e);
+        }
+    }
+    if let Ok(addr) = format!("/ip6/::/udp/{}/quic-v1", opts.port).parse::<Multiaddr>() {
+        if let Err(e) = swarm.listen_on(addr) {
+            tracing::warn!("Failed to listen on IPv6 QUIC: {}", e);
+        }
+    }
 
     println!("Relay server starting...\n");
 

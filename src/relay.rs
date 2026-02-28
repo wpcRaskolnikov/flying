@@ -55,6 +55,8 @@ fn create_swarm() -> Result<Swarm<Behaviour>> {
 async fn setup_listeners(swarm: &mut Swarm<Behaviour>) -> Result<()> {
     swarm.listen_on("/ip4/0.0.0.0/udp/0/quic-v1".parse()?)?;
     swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
+    swarm.listen_on("/ip6/::/udp/0/quic-v1".parse()?)?;
+    swarm.listen_on("/ip6/::/tcp/0".parse()?)?;
 
     let timeout = tokio::time::sleep(Duration::from_secs(1));
     tokio::pin!(timeout);
@@ -82,27 +84,11 @@ async fn connect_to_relay(swarm: &mut Swarm<Behaviour>, relay_addr: Multiaddr) -
     println!("Connecting to relay server...");
     swarm.dial(relay_addr)?;
 
-    let mut relay_connected = false;
-    let mut observed_addr_learned = false;
     loop {
         match swarm.select_next_some().await {
-            SwarmEvent::NewListenAddr { address, .. } => {
-                tracing::debug!("Listening on: {}", address);
-            }
             SwarmEvent::ConnectionEstablished { peer_id, .. } => {
-                tracing::info!("Connected to relay: {}", peer_id);
-                relay_connected = true;
-            }
-            SwarmEvent::Behaviour(BehaviourEvent::Identify(identify::Event::Received {
-                info: identify::Info { observed_addr, .. },
-                ..
-            })) => {
-                tracing::info!("Observed address: {}", observed_addr);
-                swarm.add_external_address(observed_addr.clone());
-                observed_addr_learned = true;
-            }
-            SwarmEvent::Behaviour(BehaviourEvent::RelayClient(event)) => {
-                tracing::debug!("Relay client event: {:?}", event);
+                println!("Connected to relay: {}", peer_id);
+                return Ok(());
             }
             SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
                 return Err(anyhow!(
@@ -113,12 +99,7 @@ async fn connect_to_relay(swarm: &mut Swarm<Behaviour>, relay_addr: Multiaddr) -
             }
             _ => {}
         }
-
-        if relay_connected && observed_addr_learned {
-            break;
-        }
     }
-    Ok(())
 }
 
 pub async fn relay_listen(relay_addr: Multiaddr) -> Result<Compat<Stream>> {
@@ -167,30 +148,26 @@ pub async fn relay_listen(relay_addr: Multiaddr) -> Result<Compat<Stream>> {
         .accept(STREAM_PROTOCOL)
         .map_err(|e| anyhow!("Failed to accept stream: {}", e))?;
 
-    // Wait for incoming stream from remote peer
+    let mut direct_connections = 0;
     let stream = loop {
         tokio::select! {
             Some((peer, stream)) = incoming_streams.next() => {
-                tracing::info!("Stream received from peer: {}", peer);
                 println!("Stream accepted!");
+                tracing::info!("Stream received from peer: {}", peer);
                 break stream;
             }
             event = swarm.select_next_some() => {
                 match event {
-                    SwarmEvent::ConnectionEstablished {
-                        peer_id, endpoint, ..
-                    } => {
-                        println!("Connection established with peer: {}", peer_id);
-                        tracing::info!("Connection endpoint: {:?}", endpoint);
+                    SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
+                        if !endpoint.is_relayed() {
+                            direct_connections += 1;
+                            println!("Direct connection #{} from {}", direct_connections, peer_id);
+                        }
                     }
-                    SwarmEvent::Behaviour(BehaviourEvent::Dcutr(event)) => {
-                        tracing::info!("DCUtR event: {:?}", event);
-                    }
-                    SwarmEvent::Behaviour(BehaviourEvent::Identify(event)) => {
-                        tracing::debug!("Identify event: {:?}", event);
-                    }
-                    SwarmEvent::Behaviour(BehaviourEvent::RelayClient(event)) => {
-                        tracing::debug!("Relay client event: {:?}", event);
+                    SwarmEvent::Behaviour(BehaviourEvent::Dcutr(dcutr::Event {
+                        result: Ok(_), ..
+                    })) => {
+                        println!("DCUtR hole punching succeeded!");
                     }
                     _ => {}
                 }
@@ -198,7 +175,7 @@ pub async fn relay_listen(relay_addr: Multiaddr) -> Result<Compat<Stream>> {
         }
     };
 
-    // Spawn background task to keep swarm alive
+    // Keep swarm alive in background
     tokio::spawn(async move {
         loop {
             swarm.select_next_some().await;
@@ -215,9 +192,6 @@ pub async fn relay_dial(relay_addr: Multiaddr, remote_peer_id: PeerId) -> Result
     setup_listeners(&mut swarm).await?;
     connect_to_relay(&mut swarm, relay_addr.clone()).await?;
 
-    // Get stream control before event loop
-    let mut stream_control = swarm.behaviour().stream.new_control();
-
     // Dial remote peer through relay
     println!("Dialing peer {} through relay...", remote_peer_id);
     let relay_dial_addr = relay_addr
@@ -226,62 +200,64 @@ pub async fn relay_dial(relay_addr: Multiaddr, remote_peer_id: PeerId) -> Result
 
     swarm.dial(relay_dial_addr)?;
 
-    // Wait for relay connection first
-    let mut relay_connected = false;
+    // Wait for DCUtR to complete: DCUtR event + 2 direct connections
+    let mut dcutr_success = false;
+    let mut direct_connections = 0;
+    let timeout = tokio::time::sleep(Duration::from_secs(10));
+    tokio::pin!(timeout);
     loop {
-        match swarm.select_next_some().await {
-            SwarmEvent::ConnectionEstablished {
-                peer_id, endpoint, ..
-            } => {
-                if peer_id == remote_peer_id {
-                    println!("Connected to remote peer through relay!");
-                    tracing::info!("Connection endpoint: {:?}", endpoint);
-                    relay_connected = true;
-                }
-            }
-            SwarmEvent::Behaviour(BehaviourEvent::Dcutr(dcutr::Event {
-                remote_peer_id: peer_id,
-                result,
-            })) => {
-                if peer_id == remote_peer_id {
-                    match result {
-                        Ok(connection_id) => {
-                            println!("Direct connection established (hole punching succeeded)!");
-                            tracing::info!("Direct connection ID: {:?}", connection_id);
-                            break;
-                        }
-                        Err(error) => {
-                            tracing::warn!(
-                                "DCUtR hole punching failed: {:?}, will use relay connection",
-                                error
-                            );
-                            // Fallback to relay connection
-                            if relay_connected {
+        tokio::select! {
+            event = swarm.select_next_some() => {
+                match event {
+                    SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
+                        if peer_id == remote_peer_id && !endpoint.is_relayed() {
+                            direct_connections += 1;
+                            println!("Direct connection established ({}/2)", direct_connections);
+
+                            if dcutr_success && direct_connections >= 2 {
+                                println!("DCUtR complete!");
                                 break;
                             }
                         }
                     }
+                    SwarmEvent::Behaviour(BehaviourEvent::Dcutr(dcutr::Event {
+                        remote_peer_id: peer_id,
+                        result: Ok(_),
+                    })) if peer_id == remote_peer_id => {
+                        println!("DCUtR hole punching succeeded!");
+                        dcutr_success = true;
+                        if direct_connections >= 2 {
+                            println!("DCUtR complete!");
+                            break;
+                        }
+                    }
+                    SwarmEvent::Behaviour(BehaviourEvent::Dcutr(dcutr::Event {
+                        result: Err(error), ..
+                    })) => {
+                        tracing::warn!("DCUtR failed: {:?}, using relay", error);
+                    }
+                    _ => {}
                 }
             }
-            SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
-                if peer_id == Some(remote_peer_id) {
-                    return Err(anyhow!("Failed to connect to remote peer: {}", error));
-                }
+            _ = &mut timeout => {
+                println!("DCUtR timeout, using available connection");
+                break;
             }
-            _ => {}
         }
     }
 
-    // Open stream after connection is ready (either direct or relay)
+    // Open stream
     println!("Opening file transfer stream...");
-    let stream = stream_control
+    let stream = swarm
+        .behaviour()
+        .stream
+        .new_control()
         .open_stream(remote_peer_id, STREAM_PROTOCOL)
         .await
         .map_err(|e| anyhow!("Failed to open stream: {}", e))?;
-
     println!("Stream established!\n");
 
-    // Spawn background task to keep swarm alive
+    // Keep swarm alive in background
     tokio::spawn(async move {
         loop {
             swarm.select_next_some().await;
