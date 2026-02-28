@@ -203,7 +203,7 @@ pub async fn relay_dial(relay_addr: Multiaddr, remote_peer_id: PeerId) -> Result
     // Wait for DCUtR to complete: DCUtR event + 2 direct connections
     let mut dcutr_success = false;
     let mut direct_connections = 0;
-    let timeout = tokio::time::sleep(Duration::from_secs(10));
+    let timeout = tokio::time::sleep(Duration::from_secs(60));
     tokio::pin!(timeout);
     loop {
         tokio::select! {

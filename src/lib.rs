@@ -9,7 +9,7 @@ use mdns_sd::ServiceDaemon;
 use std::net::{IpAddr, SocketAddr};
 use std::path::Path;
 use tokio::{
-    io::{AsyncRead, AsyncWrite, AsyncWriteExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::TcpStream,
     sync::mpsc::Sender,
 };
@@ -177,6 +177,10 @@ pub async fn run_receiver(
 
     println!("\nTransfer complete!");
 
+    // Send ACK to sender
+    stream.write_u8(1).await?;
+    stream.flush().await?;
+
     stream.shutdown().await?;
     if let Some(mdns_daemon) = mdns_daemon {
         let _ = mdns_daemon.shutdown();
@@ -217,6 +221,9 @@ pub async fn run_sender(
     }
 
     println!("\nTransfer complete!");
+
+    // Wait for ACK from receiver
+    let _ = stream.read_u8().await?;
 
     stream.shutdown().await?;
     if let Some(mdns_daemon) = mdns_daemon {
@@ -267,6 +274,10 @@ pub async fn run_sender_persistent(
             }
 
             println!("\nTransfer complete!");
+
+            // Wait for ACK from receiver
+            let _ = stream.read_u8().await?;
+
             stream.shutdown().await?;
 
             Ok::<(), anyhow::Error>(())
