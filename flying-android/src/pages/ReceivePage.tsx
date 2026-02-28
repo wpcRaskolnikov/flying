@@ -25,13 +25,15 @@ import { listen } from "@tauri-apps/api/event";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { Store } from "@tauri-apps/plugin-store";
 
-type ConnectionMode = "listen" | "connect";
+type ConnectionMode = "listen" | "connect" | "relay_listen" | "relay_dial";
 
 function ReceivePage() {
   const [password, setPassword] = useState("");
   const [connectionMode, setConnectionMode] =
     useState<ConnectionMode>("connect");
   const [connectIp, setConnectIp] = useState("");
+  const [relayAddr, setRelayAddr] = useState("");
+  const [remotePeerId, setRemotePeerId] = useState("");
   const [isReceiving, setIsReceiving] = useState(false);
   const [status, setStatus] = useState("");
   const [progress, setProgress] = useState(0);
@@ -168,9 +170,33 @@ function ReceivePage() {
       return;
     }
 
+    if (
+      (connectionMode === "relay_listen" || connectionMode === "relay_dial") &&
+      !relayAddr.trim()
+    ) {
+      setSnackbar({
+        open: true,
+        message: "Please enter relay address",
+        severity: "error",
+      });
+      return;
+    }
+
+    if (connectionMode === "relay_dial" && !remotePeerId.trim()) {
+      setSnackbar({
+        open: true,
+        message: "Please enter remote peer ID",
+        severity: "error",
+      });
+      return;
+    }
+
     let receivePassword = password.trim();
 
-    if (connectionMode === "listen" && !receivePassword) {
+    if (
+      (connectionMode === "listen" || connectionMode === "relay_listen") &&
+      !receivePassword
+    ) {
       try {
         receivePassword = await invoke<string>("generate_password");
         setPassword(receivePassword);
@@ -202,6 +228,8 @@ function ReceivePage() {
         password: receivePassword,
         connectionMode,
         connectIp: connectIp.trim() || null,
+        relayAddr: relayAddr.trim() || null,
+        remotePeerId: remotePeerId.trim() || null,
         outputDirUri: outputDirUri,
         port,
       });
@@ -317,6 +345,8 @@ function ReceivePage() {
           >
             <MenuItem value="listen">Listen</MenuItem>
             <MenuItem value="connect">Connect</MenuItem>
+            <MenuItem value="relay_listen">Relay Listen</MenuItem>
+            <MenuItem value="relay_dial">Relay Dial</MenuItem>
           </Select>
         </FormControl>
       </Box>
@@ -329,6 +359,33 @@ function ReceivePage() {
             placeholder="e.g., 192.168.1.100"
             value={connectIp}
             onChange={(e) => setConnectIp(e.target.value)}
+            disabled={isReceiving}
+          />
+        </Box>
+      )}
+
+      {(connectionMode === "relay_listen" ||
+        connectionMode === "relay_dial") && (
+        <Box sx={{ mb: 3 }}>
+          <TextField
+            fullWidth
+            label="Relay Address"
+            placeholder="e.g., /ip4/1.2.3.4/tcp/4001/p2p/12D3K..."
+            value={relayAddr}
+            onChange={(e) => setRelayAddr(e.target.value)}
+            disabled={isReceiving}
+          />
+        </Box>
+      )}
+
+      {connectionMode === "relay_dial" && (
+        <Box sx={{ mb: 3 }}>
+          <TextField
+            fullWidth
+            label="Remote Peer ID"
+            placeholder="e.g., 12D3KooW..."
+            value={remotePeerId}
+            onChange={(e) => setRemotePeerId(e.target.value)}
             disabled={isReceiving}
           />
         </Box>

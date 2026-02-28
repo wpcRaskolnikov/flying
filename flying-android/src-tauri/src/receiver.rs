@@ -23,12 +23,14 @@ pub async fn receive_file(
     password: String,
     connection_mode: ConnectionMode,
     connect_ip: Option<String>,
+    relay_addr: Option<String>,
+    remote_peer_id: Option<String>,
     _output_dir_uri: String,
     port: u16,
     window: tauri::Window,
     state: tauri::State<'_, Arc<Mutex<TransferState>>>,
 ) -> Result<(), String> {
-    let mode = connection_mode.to_flying_mode(connect_ip);
+    let mode = connection_mode.to_flying_mode(connect_ip, relay_addr, remote_peer_id)?;
 
     let (abort_handle, abort_registration) = tokio::sync::oneshot::channel::<()>();
 

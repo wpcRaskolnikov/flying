@@ -2,6 +2,7 @@ use crate::TransferState;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tauri::Emitter;
+use tokio::io::AsyncReadExt;
 use tokio::sync::Mutex;
 
 #[cfg(target_os = "android")]
@@ -15,14 +16,44 @@ use {
 pub enum ConnectionMode {
     Listen,
     Connect,
+    RelayListen,
+    RelayDial,
 }
 
 impl ConnectionMode {
-    pub fn to_flying_mode(&self, connect_ip: Option<String>) -> flying::ConnectionMode {
+    pub fn to_flying_mode(
+        &self,
+        connect_ip: Option<String>,
+        relay_addr: Option<String>,
+        remote_peer_id: Option<String>,
+    ) -> Result<flying::ConnectionMode, String> {
         match self {
-            ConnectionMode::Listen => flying::ConnectionMode::Listen,
-            ConnectionMode::Connect => {
-                flying::ConnectionMode::Connect(connect_ip.unwrap_or_default())
+            ConnectionMode::Listen => Ok(flying::ConnectionMode::Listen),
+            ConnectionMode::Connect => Ok(flying::ConnectionMode::Connect(
+                connect_ip.unwrap_or_default(),
+            )),
+            ConnectionMode::RelayListen => {
+                let addr = relay_addr.ok_or("Relay address required")?;
+                let multiaddr = addr
+                    .parse()
+                    .map_err(|e| format!("Invalid multiaddr: {}", e))?;
+                Ok(flying::ConnectionMode::RelayListen {
+                    relay_addr: multiaddr,
+                })
+            }
+            ConnectionMode::RelayDial => {
+                let addr = relay_addr.ok_or("Relay address required")?;
+                let peer = remote_peer_id.ok_or("Remote peer ID required")?;
+                let multiaddr = addr
+                    .parse()
+                    .map_err(|e| format!("Invalid multiaddr: {}", e))?;
+                let peer_id = peer
+                    .parse()
+                    .map_err(|e| format!("Invalid peer ID: {}", e))?;
+                Ok(flying::ConnectionMode::RelayDial {
+                    relay_addr: multiaddr,
+                    remote_peer_id: peer_id,
+                })
             }
         }
     }
@@ -45,12 +76,14 @@ pub async fn send_file(
     password: String,
     connection_mode: ConnectionMode,
     connect_ip: Option<String>,
+    relay_addr: Option<String>,
+    remote_peer_id: Option<String>,
     port: u16,
     _app: tauri::AppHandle,
     window: tauri::Window,
     state: tauri::State<'_, Arc<Mutex<TransferState>>>,
 ) -> Result<(), String> {
-    let mode = connection_mode.to_flying_mode(connect_ip);
+    let mode = connection_mode.to_flying_mode(connect_ip, relay_addr, remote_peer_id)?;
 
     let (abort_handle, abort_registration) = tokio::sync::oneshot::channel::<()>();
 
@@ -208,10 +241,9 @@ async fn send_file_android(
             .map_err(|e| format!("Failed to send file: {}", e))?;
     }
 
-    stream
-        .shutdown()
-        .await
-        .map_err(|e| format!("Failed to shutdown stream: {}", e))?;
+    // Wait for ACK from receiver
+    let _ = stream.read_u8().await;
+    let _ = stream.shutdown().await;
 
     if let Some(mdns_daemon) = _mdns_daemon {
         let _ = mdns_daemon.shutdown();
@@ -320,10 +352,9 @@ async fn send_folder_android(
         .await
         .map_err(|e| format!("Failed to send end signal: {}", e))?;
 
-    stream
-        .shutdown()
-        .await
-        .map_err(|e| format!("Failed to shutdown stream: {}", e))?;
+    // Wait for ACK from receiver
+    let _ = stream.read_u8().await;
+    let _ = stream.shutdown().await;
 
     if let Some(mdns_daemon) = _mdns_daemon {
         let _ = mdns_daemon.shutdown();
