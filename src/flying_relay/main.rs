@@ -8,7 +8,7 @@ use libp2p::{
 use std::{error::Error, time::Duration};
 
 #[derive(Parser, Debug)]
-#[command(name = "flying-relay")]
+#[command(name = "flying-relay", version)]
 #[command(about = "Flying relay server for NAT traversal", long_about = None)]
 struct Opts {
     #[arg(long, default_value = "4001")]

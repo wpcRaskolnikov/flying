@@ -101,6 +101,7 @@ fn select_service(services: &[mdns::DiscoveredService]) -> Option<&mdns::Discove
 pub async fn establish_connection(
     mode: &ConnectionMode,
     port: u16,
+    peer_id_tx: Option<Sender<String>>,
 ) -> anyhow::Result<(Box<dyn NetworkStream>, Option<ServiceDaemon>)> {
     match mode {
         ConnectionMode::AutoDiscover => {
@@ -139,14 +140,14 @@ pub async fn establish_connection(
             Ok((Box::new(stream) as Box<dyn NetworkStream>, None))
         }
         ConnectionMode::RelayListen { relay_addr } => {
-            let stream = relay::relay_listen(relay_addr.clone()).await?;
+            let stream = relay::relay_listen(relay_addr.clone(), peer_id_tx).await?;
             Ok((Box::new(stream) as Box<dyn NetworkStream>, None))
         }
         ConnectionMode::RelayDial {
             relay_addr,
             remote_peer_id,
         } => {
-            let stream = relay::relay_dial(relay_addr.clone(), *remote_peer_id).await?;
+            let stream = relay::relay_dial(relay_addr.clone(), *remote_peer_id, peer_id_tx).await?;
             Ok((Box::new(stream) as Box<dyn NetworkStream>, None))
         }
     }
@@ -162,8 +163,10 @@ pub async fn run_receiver(
     connection_mode: ConnectionMode,
     port: u16,
     progress_tx: Option<Sender<u8>>,
+    peer_id_tx: Option<Sender<String>>,
 ) -> anyhow::Result<()> {
-    let (mut stream, mdns_daemon) = establish_connection(&connection_mode, port).await?;
+    let (mut stream, mdns_daemon) =
+        establish_connection(&connection_mode, port, peer_id_tx).await?;
 
     let (key, relative_path, is_folder) =
         utils::receive_handshake(stream.as_mut(), VERSION, password).await?;
@@ -194,6 +197,7 @@ pub async fn run_sender(
     connection_mode: ConnectionMode,
     port: u16,
     progress_tx: Option<Sender<u8>>,
+    peer_id_tx: Option<Sender<String>>,
 ) -> anyhow::Result<()> {
     let is_folder = file_path.is_dir();
 
@@ -203,7 +207,8 @@ pub async fn run_sender(
         .to_string_lossy()
         .to_string();
 
-    let (mut stream, mdns_daemon) = establish_connection(&connection_mode, port).await?;
+    let (mut stream, mdns_daemon) =
+        establish_connection(&connection_mode, port, peer_id_tx).await?;
 
     let key = utils::send_handshake(
         stream.as_mut(),

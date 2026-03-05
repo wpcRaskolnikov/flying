@@ -2,12 +2,11 @@ use crate::TransferState;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tauri::Emitter;
-use tokio::io::AsyncReadExt;
 use tokio::sync::Mutex;
 
 #[cfg(target_os = "android")]
 use {
-    tauri_plugin_android_fs::{AndroidFsExt, Entry, FileUri},
+    tauri_plugin_android_fs::{AndroidFsExt, AsyncReadExt, Entry, FileUri},
     tokio::{io::AsyncWriteExt, sync::mpsc::Sender},
 };
 
@@ -90,6 +89,15 @@ pub async fn send_file(
     tokio::spawn(async move {
         let _ = window.emit("send-start", serde_json::json!({}));
 
+        // Create peer ID channel for receiving peer ID
+        let (peer_id_tx, mut peer_id_rx) = tokio::sync::mpsc::channel(1);
+        let window_peer_id = window.clone();
+        tokio::spawn(async move {
+            if let Some(peer_id) = peer_id_rx.recv().await {
+                let _ = window_peer_id.emit("send-ready", peer_id);
+            }
+        });
+
         #[cfg(target_os = "android")]
         let result: Result<(), String> = async {
             let uri = FileUri::from_json_str(&file_uri)
@@ -114,7 +122,8 @@ pub async fn send_file(
                     &password,
                     mode,
                     port,
-                    Some(progress_tx)
+                    Some(progress_tx),
+                    Some(peer_id_tx)
                 ) => {
                     result
                 }
@@ -139,7 +148,7 @@ pub async fn send_file(
                 _ = abort_registration => {
                     Err("Transfer cancelled".to_string())
                 }
-                result = flying::run_sender(&file_path, &password, mode, port, Some(progress_tx)) => {
+                result = flying::run_sender(&file_path, &password, mode, port, Some(progress_tx), Some(peer_id_tx)) => {
                     result.map_err(|e| format!("Send error: {}", e))
                 }
             }
@@ -170,6 +179,7 @@ async fn run_send_android(
     mode: flying::ConnectionMode,
     port: u16,
     progress_tx: Option<Sender<u8>>,
+    peer_id_tx: Option<tokio::sync::mpsc::Sender<String>>,
 ) -> Result<(), String> {
     let api = app.android_fs_async();
 
@@ -179,9 +189,9 @@ async fn run_send_android(
         .map_err(|e| format!("Failed to get metadata: {}", e))?;
 
     if metadata.is_dir() {
-        send_folder_android(app, uri, password, mode, port, progress_tx).await
+        send_folder_android(app, uri, password, mode, port, progress_tx, peer_id_tx).await
     } else {
-        send_file_android(app, uri, password, mode, port, progress_tx).await
+        send_file_android(app, uri, password, mode, port, progress_tx, peer_id_tx).await
     }
 }
 
@@ -193,6 +203,7 @@ async fn send_file_android(
     mode: flying::ConnectionMode,
     port: u16,
     progress_tx: Option<Sender<u8>>,
+    peer_id_tx: Option<tokio::sync::mpsc::Sender<String>>,
 ) -> Result<(), String> {
     let api = app.android_fs_async();
 
@@ -212,7 +223,7 @@ async fn send_file_android(
         .map_err(|e| format!("Failed to get file size: {}", e))?
         .len();
 
-    let (mut stream, _mdns_daemon) = flying::establish_connection(&mode, port)
+    let (mut stream, _mdns_daemon) = flying::establish_connection(&mode, port, peer_id_tx)
         .await
         .map_err(|e| format!("Failed to establish connection: {}", e))?;
 
@@ -260,6 +271,7 @@ async fn send_folder_android(
     mode: flying::ConnectionMode,
     port: u16,
     progress_tx: Option<tokio::sync::mpsc::Sender<u8>>,
+    peer_id_tx: Option<tokio::sync::mpsc::Sender<String>>,
 ) -> Result<(), String> {
     let api = app.android_fs_async();
 
@@ -268,7 +280,7 @@ async fn send_folder_android(
         .await
         .map_err(|e| format!("Failed to get folder name: {}", e))?;
 
-    let (mut stream, _mdns_daemon) = flying::establish_connection(&mode, port)
+    let (mut stream, _mdns_daemon) = flying::establish_connection(&mode, port, peer_id_tx)
         .await
         .map_err(|e| format!("Failed to establish connection: {}", e))?;
 

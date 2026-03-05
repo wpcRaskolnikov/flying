@@ -7,6 +7,7 @@ use libp2p::{
 };
 use libp2p_stream as stream;
 use std::time::Duration;
+use tokio::sync::mpsc::Sender;
 use tokio_util::compat::{Compat, FuturesAsyncReadCompatExt};
 
 const STREAM_PROTOCOL: StreamProtocol = StreamProtocol::new("/flying/stream/1.0.0");
@@ -102,9 +103,17 @@ async fn connect_to_relay(swarm: &mut Swarm<Behaviour>, relay_addr: Multiaddr) -
     }
 }
 
-pub async fn relay_listen(relay_addr: Multiaddr) -> Result<Compat<Stream>> {
+pub async fn relay_listen(
+    relay_addr: Multiaddr,
+    peer_id_tx: Option<Sender<String>>,
+) -> Result<Compat<Stream>> {
     let mut swarm = create_swarm()?;
     let local_peer_id = *swarm.local_peer_id();
+
+    // Send peer ID to channel if provided
+    if let Some(tx) = peer_id_tx {
+        let _ = tx.send(local_peer_id.to_string()).await;
+    }
 
     // Display PeerID for manual exchange
     println!("\n===========================================");
@@ -186,8 +195,18 @@ pub async fn relay_listen(relay_addr: Multiaddr) -> Result<Compat<Stream>> {
     Ok(stream_wrapper)
 }
 
-pub async fn relay_dial(relay_addr: Multiaddr, remote_peer_id: PeerId) -> Result<Compat<Stream>> {
+pub async fn relay_dial(
+    relay_addr: Multiaddr,
+    remote_peer_id: PeerId,
+    peer_id_tx: Option<Sender<String>>,
+) -> Result<Compat<Stream>> {
     let mut swarm = create_swarm()?;
+    let local_peer_id = *swarm.local_peer_id();
+
+    // Send peer ID to channel if provided
+    if let Some(tx) = peer_id_tx {
+        let _ = tx.send(local_peer_id.to_string()).await;
+    }
 
     setup_listeners(&mut swarm).await?;
     connect_to_relay(&mut swarm, relay_addr.clone()).await?;
@@ -203,7 +222,7 @@ pub async fn relay_dial(relay_addr: Multiaddr, remote_peer_id: PeerId) -> Result
     // Wait for DCUtR to complete: DCUtR event + 2 direct connections
     let mut dcutr_success = false;
     let mut direct_connections = 0;
-    let timeout = tokio::time::sleep(Duration::from_secs(60));
+    let timeout = tokio::time::sleep(Duration::from_secs(30));
     tokio::pin!(timeout);
     loop {
         tokio::select! {

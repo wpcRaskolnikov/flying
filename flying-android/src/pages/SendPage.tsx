@@ -37,6 +37,7 @@ function SendPage() {
   const [connectIp, setConnectIp] = useState("");
   const [relayAddr, setRelayAddr] = useState("");
   const [remotePeerId, setRemotePeerId] = useState("");
+  const [peerId, setPeerId] = useState("");
   const [isSending, setIsSending] = useState(false);
   const [status, setStatus] = useState("");
   const [progress, setProgress] = useState(0);
@@ -80,11 +81,16 @@ function SendPage() {
       setStatus(`Sending file... ${event.payload}%`);
     });
 
+    const unlisten5 = listen<string>("send-ready", (event) => {
+      setPeerId(event.payload);
+    });
+
     return () => {
       unlisten1.then((fn) => fn());
       unlisten2.then((fn) => fn());
       unlisten3.then((fn) => fn());
       unlisten4.then((fn) => fn());
+      unlisten5.then((fn) => fn());
     };
   }, []);
 
@@ -274,12 +280,10 @@ function SendPage() {
     <Box sx={{ p: 2, pt: 3 }}>
       <Typography variant="h6">Send File</Typography>
       <Box sx={{ mb: 3 }}>
-        <Typography variant="body2" color="text.secondary" gutterBottom>
-          File or Folder to Send
-        </Typography>
         <Box sx={{ display: "flex", gap: 1 }}>
           <TextField
             fullWidth
+            label="File or Folder to Send"
             placeholder="Select file or folder"
             value={selectedFileName}
             slotProps={{
@@ -288,7 +292,6 @@ function SendPage() {
               },
             }}
             disabled={isSending}
-            size="small"
             title={selectedFileName}
           />
           <IconButton
@@ -313,23 +316,19 @@ function SendPage() {
       </Box>
 
       <Box sx={{ mb: 3 }}>
-        <Typography variant="body2" color="text.secondary" gutterBottom>
-          Password
-        </Typography>
         <Box sx={{ display: "flex", gap: 1 }}>
           <TextField
             fullWidth
+            label="Password"
             placeholder="Enter or generate password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             disabled={isSending}
             type="text"
-            size="small"
           />
           <IconButton
             onClick={handleGeneratePassword}
             color="primary"
-            size="small"
             disabled={isSending}
             title="Generate password"
           >
@@ -339,7 +338,6 @@ function SendPage() {
             <IconButton
               onClick={handleCopyPassword}
               color="primary"
-              size="small"
               title="Copy password"
             >
               <CopyIcon />
@@ -403,6 +401,48 @@ function SendPage() {
             onChange={(e) => setRemotePeerId(e.target.value)}
             disabled={isSending}
           />
+        </Box>
+      )}
+
+      {connectionMode === "relay_listen" && (
+        <Box sx={{ mb: 3 }}>
+          <Box sx={{ display: "flex", gap: 1 }}>
+            <TextField
+              fullWidth
+              label="Your Peer ID"
+              value={peerId}
+              placeholder="Waiting for peer ID..."
+              slotProps={{
+                input: {
+                  readOnly: true,
+                },
+              }}
+              title={peerId}
+            />
+            <IconButton
+              onClick={async () => {
+                try {
+                  await writeText(peerId);
+                  setSnackbar({
+                    open: true,
+                    message: "Peer ID copied to clipboard",
+                    severity: "success",
+                  });
+                } catch (error) {
+                  console.error("Failed to copy peer ID:", error);
+                  setSnackbar({
+                    open: true,
+                    message: "Failed to copy peer ID",
+                    severity: "error",
+                  });
+                }
+              }}
+              color="primary"
+              title="Copy Peer ID"
+            >
+              <CopyIcon />
+            </IconButton>
+          </Box>
         </Box>
       )}
 

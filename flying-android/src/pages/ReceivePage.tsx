@@ -34,6 +34,7 @@ function ReceivePage() {
   const [connectIp, setConnectIp] = useState("");
   const [relayAddr, setRelayAddr] = useState("");
   const [remotePeerId, setRemotePeerId] = useState("");
+  const [peerId, setPeerId] = useState("");
   const [isReceiving, setIsReceiving] = useState(false);
   const [status, setStatus] = useState("");
   const [progress, setProgress] = useState(0);
@@ -90,11 +91,16 @@ function ReceivePage() {
       setStatus(`Receiving file... ${event.payload}%`);
     });
 
+    const unlisten5 = listen<string>("receive-ready", (event) => {
+      setPeerId(event.payload);
+    });
+
     return () => {
       unlisten1.then((fn) => fn());
       unlisten2.then((fn) => fn());
       unlisten3.then((fn) => fn());
       unlisten4.then((fn) => fn());
+      unlisten5.then((fn) => fn());
     };
   }, []);
 
@@ -268,12 +274,10 @@ function ReceivePage() {
     <Box sx={{ p: 2, pt: 3 }}>
       <Typography variant="h6">Receive File</Typography>
       <Box sx={{ mb: 3 }}>
-        <Typography variant="body2" color="text.secondary" gutterBottom>
-          Output Folder
-        </Typography>
         <Box sx={{ display: "flex", gap: 1 }}>
           <TextField
             fullWidth
+            label="Output Folder"
             placeholder="Select output folder"
             value={outputDirName || ""}
             slotProps={{
@@ -282,7 +286,6 @@ function ReceivePage() {
               },
             }}
             disabled={isReceiving}
-            size="small"
             title={outputDirName || ""}
           />
           <IconButton
@@ -298,23 +301,19 @@ function ReceivePage() {
       </Box>
 
       <Box sx={{ mb: 3 }}>
-        <Typography variant="body2" color="text.secondary" gutterBottom>
-          Password
-        </Typography>
         <Box sx={{ display: "flex", gap: 1 }}>
           <TextField
             fullWidth
+            label="Password"
             placeholder="Enter or generate password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             disabled={isReceiving}
             type="text"
-            size="small"
           />
           <IconButton
             onClick={handleGeneratePassword}
             color="primary"
-            size="small"
             disabled={isReceiving}
             title="Generate password"
           >
@@ -324,7 +323,6 @@ function ReceivePage() {
             <IconButton
               onClick={handleCopyPassword}
               color="primary"
-              size="small"
               title="Copy password"
             >
               <CopyIcon />
@@ -388,6 +386,48 @@ function ReceivePage() {
             onChange={(e) => setRemotePeerId(e.target.value)}
             disabled={isReceiving}
           />
+        </Box>
+      )}
+
+      {connectionMode === "relay_listen" && (
+        <Box sx={{ mb: 3 }}>
+          <Box sx={{ display: "flex", gap: 1 }}>
+            <TextField
+              fullWidth
+              label="Your Peer ID"
+              value={peerId}
+              placeholder="Waiting for peer ID..."
+              slotProps={{
+                input: {
+                  readOnly: true,
+                },
+              }}
+              title={peerId}
+            />
+            <IconButton
+              onClick={async () => {
+                try {
+                  await writeText(peerId);
+                  setSnackbar({
+                    open: true,
+                    message: "Peer ID copied to clipboard",
+                    severity: "success",
+                  });
+                } catch (error) {
+                  console.error("Failed to copy peer ID:", error);
+                  setSnackbar({
+                    open: true,
+                    message: "Failed to copy peer ID",
+                    severity: "error",
+                  });
+                }
+              }}
+              color="primary"
+              title="Copy Peer ID"
+            >
+              <CopyIcon />
+            </IconButton>
+          </Box>
         </Box>
       )}
 

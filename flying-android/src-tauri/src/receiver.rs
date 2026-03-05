@@ -61,12 +61,21 @@ pub async fn receive_file(
             }
         });
 
+        // Create peer ID channel for receiving peer ID
+        let (peer_id_tx, mut peer_id_rx) = tokio::sync::mpsc::channel(1);
+        let window_peer_id = window.clone();
+        tokio::spawn(async move {
+            if let Some(peer_id) = peer_id_rx.recv().await {
+                let _ = window_peer_id.emit("receive-ready", peer_id);
+            }
+        });
+
         // Check for cancellation or run transfer
         let result = tokio::select! {
             _ = abort_registration => {
                 Err("Transfer cancelled".to_string())
             }
-            result = flying::run_receiver(&output_dir, &password, mode, port, Some(progress_tx)) => {
+            result = flying::run_receiver(&output_dir, &password, mode, port, Some(progress_tx), Some(peer_id_tx)) => {
                 result.map_err(|e| format!("Receive error: {}", e))
             }
         };

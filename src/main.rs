@@ -4,7 +4,7 @@ use libp2p::{Multiaddr, PeerId};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
-#[command(name = "flying")]
+#[command(name = "flying", version)]
 #[command(about = "Simple encrypted file transfer tool with automatic peer discovery", long_about = None)]
 struct Cli {
     #[command(subcommand)]
@@ -150,7 +150,7 @@ async fn main() {
             let result = if persistent {
                 run_sender_persistent(&file, &password, port, None).await
             } else {
-                run_sender(&file, &password, connection_mode, port, None).await
+                run_sender(&file, &password, connection_mode, port, None, None).await
             };
 
             if let Err(e) = result {
@@ -182,7 +182,9 @@ async fn main() {
             let password = get_or_prompt_password(&connection_mode, password);
             print_session_info("RECEIVE", &password, &connection_mode, Some(&output));
 
-            if let Err(e) = run_receiver(&output, &password, connection_mode, port, None).await {
+            if let Err(e) =
+                run_receiver(&output, &password, connection_mode, port, None, None).await
+            {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }
