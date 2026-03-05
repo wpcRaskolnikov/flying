@@ -292,7 +292,7 @@ async fn send_folder_android(
     // Recursive send function
     async fn send_recursive(
         app: &tauri::AppHandle,
-        stream: &mut tokio::net::TcpStream,
+        stream: &mut Box<dyn flying::NetworkStream>,
         dir_uri: &FileUri,
         base_path: &str,
         key: &ring::aead::LessSafeKey,
