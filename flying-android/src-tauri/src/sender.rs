@@ -7,7 +7,7 @@ use tokio::sync::Mutex;
 #[cfg(target_os = "android")]
 use {
     tauri_plugin_android_fs::{AndroidFsExt, Entry, FileUri},
-    tokio::{AsyncReadExt, io::AsyncWriteExt, sync::mpsc::Sender},
+    tokio::{io::AsyncReadExt, io::AsyncWriteExt, sync::mpsc::Sender},
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
