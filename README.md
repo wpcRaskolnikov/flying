@@ -2,6 +2,14 @@
 
 Fast, secure, encrypted file transfer tool with automatic peer discovery.
 
+This repository contains two versions:
+- **flying** - Command-line interface (CLI)
+- **flying-android** - Graphical user interface (GUI) for desktop and mobile
+
+## Demo
+
+![Flying GUI Demo](./assets/demo.gif)
+
 ## Features
 
 - **🔒 AES-256-GCM encryption** - All transfers are encrypted

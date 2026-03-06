@@ -14,6 +14,7 @@ import { Store } from "@tauri-apps/plugin-store";
 function SettingsPage() {
   const [defaultFolder, setDefaultFolder] = useState<string>("");
   const [port, setPort] = useState<number>(3290);
+  const [version, setVersion] = useState<string>("");
   const [snackbar, setSnackbar] = useState({
     open: false,
     message: "",
@@ -28,6 +29,10 @@ function SettingsPage() {
     try {
       const folderPath = await invoke<string>("get_default_folder");
       setDefaultFolder(folderPath);
+
+      // Load version
+      const versionStr = await invoke<string>("get_version");
+      setVersion(versionStr);
 
       // Load port from store
       const storeInstance = await Store.load("settings.json");
@@ -171,6 +176,18 @@ function SettingsPage() {
         Android: Files will be saved to the Download folder. The folder
         selection above is used as a reference but actual files go to Download.
       </Alert>
+
+      <Box
+        sx={{
+          mt: 4,
+          textAlign: "center",
+          color: "text.secondary",
+        }}
+      >
+        <Typography variant="caption" display="block">
+          Flying v{version}
+        </Typography>
+      </Box>
 
       <Snackbar
         open={snackbar.open}
