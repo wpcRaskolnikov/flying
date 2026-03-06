@@ -92,7 +92,7 @@ jobs:
           base64 -d <<< "${{ secrets.ANDROID_KEY_BASE64 }}" > $RUNNER_TEMP/keystore.jks
           echo "storeFile=$RUNNER_TEMP/keystore.jks" >> keystore.properties
 
-      - uses: tauri-apps/tauri-action@e839bb55b23d177d8cb537c2e10f41decb2d1089
+      - uses: tauri-apps/tauri-action@51a9f1156b33df106d827c3a78f8f894946c5faa
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
