@@ -38,11 +38,6 @@ fn get_default_folder(app: tauri::AppHandle) -> Result<String, String> {
     Ok(path)
 }
 
-#[tauri::command]
-fn get_version() -> String {
-    env!("CARGO_PKG_VERSION").to_string()
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let transfer_state = Arc::new(Mutex::new(TransferState::default()));
@@ -64,7 +59,6 @@ pub fn run() {
             receiver::receive_file,
             receiver::cancel_receive,
             get_default_folder,
-            get_version
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

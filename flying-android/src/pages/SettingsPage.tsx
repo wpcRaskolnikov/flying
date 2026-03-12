@@ -9,6 +9,7 @@ import {
 } from "@mui/material";
 import { Folder as FolderIcon, Save as SaveIcon } from "@mui/icons-material";
 import { invoke } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
 import { Store } from "@tauri-apps/plugin-store";
 
 function SettingsPage() {
@@ -30,8 +31,7 @@ function SettingsPage() {
       const folderPath = await invoke<string>("get_default_folder");
       setDefaultFolder(folderPath);
 
-      // Load version
-      const versionStr = await invoke<string>("get_version");
+      const versionStr = await getVersion();
       setVersion(versionStr);
 
       // Load port from store
