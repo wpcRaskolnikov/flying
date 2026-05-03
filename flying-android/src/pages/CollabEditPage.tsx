@@ -23,7 +23,7 @@ import {
 import CodeMirror from "@uiw/react-codemirror";
 import { yCollab } from "y-codemirror.next";
 import * as Y from "yjs";
-import { WebsocketProvider } from "y-websocket";
+import { WebrtcProvider } from "y-webrtc";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 
 interface Peer {
@@ -50,10 +50,8 @@ function pickColor() {
 function CollabEditPage() {
   const [roomName, setRoomName] = useState("");
   const [userName, setUserName] = useState("");
-  const [serverAddr, setServerAddr] = useState("demos.yjs.dev");
   const [peers, setPeers] = useState<Peer[]>([]);
   const [inRoom, setInRoom] = useState(false);
-  const [connected, setConnected] = useState(false);
   const [snackbar, setSnackbar] = useState({
     open: false,
     message: "",
@@ -61,7 +59,7 @@ function CollabEditPage() {
   });
 
   const ydocRef = useRef<Y.Doc | null>(null);
-  const providerRef = useRef<WebsocketProvider | null>(null);
+  const providerRef = useRef<WebrtcProvider | null>(null);
   const undoRef = useRef<Y.UndoManager | null>(null);
   const collabExtRef = useRef<any>(null);
 
@@ -81,10 +79,6 @@ function CollabEditPage() {
       notify("Please enter your name", "error");
       return;
     }
-    if (!serverAddr.trim()) {
-      notify("Please enter server address", "error");
-      return;
-    }
 
     const ydoc = new Y.Doc();
     ydocRef.current = ydoc;
@@ -94,10 +88,7 @@ function CollabEditPage() {
     undoRef.current = undoManager;
 
     const uc = pickColor();
-    const protocol = serverAddr.includes("localhost") ? "ws" : "wss";
-    const wsUrl = `${protocol}://${serverAddr.trim()}/${roomName.trim()}`;
-
-    const provider = new WebsocketProvider(wsUrl, roomName.trim(), ydoc);
+    const provider = new WebrtcProvider(roomName.trim(), ydoc);
     providerRef.current = provider;
 
     provider.awareness.setLocalStateField("user", {
@@ -123,10 +114,6 @@ function CollabEditPage() {
       setPeers(list);
     };
 
-    provider.on("status", ({ status }: { status: string }) => {
-      setConnected(status === "connected");
-    });
-
     provider.awareness.on("change", updatePeers);
     updatePeers();
 
@@ -145,13 +132,11 @@ function CollabEditPage() {
     }
     undoRef.current = null;
     collabExtRef.current = null;
-    setConnected(false);
     setPeers([]);
     setInRoom(false);
     notify("Left the room", "info");
   };
 
-  // Cleanup on unmount
   useEffect(() => {
     return () => {
       if (providerRef.current) providerRef.current.destroy();
@@ -176,17 +161,10 @@ function CollabEditPage() {
           Collaborative Editor
         </Typography>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-          Enter a server address and room to start editing together.
+          Enter a room to start editing together on the same network.
         </Typography>
 
         <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
-          <TextField
-            label="Server Address"
-            value={serverAddr}
-            onChange={(e) => setServerAddr(e.target.value)}
-            placeholder="e.g., demos.yjs.dev or 192.168.1.10:8080"
-          />
-
           <Box sx={{ display: "flex", gap: 1, alignItems: "center" }}>
             <TextField
               fullWidth
@@ -261,13 +239,8 @@ function CollabEditPage() {
             size="small"
             icon={<GroupIcon />}
             label={`${peers.length + 1} online`}
-            color={connected ? "success" : "default"}
+            color="success"
             variant="outlined"
-          />
-          <Chip
-            size="small"
-            label={connected ? "Connected" : "Connecting..."}
-            color={connected ? "success" : "warning"}
           />
           <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
             <Typography variant="body2" noWrap sx={{ maxWidth: 120 }}>
