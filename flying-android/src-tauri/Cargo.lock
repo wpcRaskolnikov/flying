@@ -1571,7 +1571,7 @@ dependencies = [
 
 [[package]]
 name = "flying-android"
-version = "0.6.11"
+version = "0.6.12"
 dependencies = [
  "flying",
  "futures-util",
@@ -1588,7 +1588,6 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "tracing",
- "wry",
  "yrs",
 ]
 
