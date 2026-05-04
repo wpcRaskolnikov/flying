@@ -2,6 +2,7 @@ mod discovery;
 mod file_picker;
 mod receiver;
 mod sender;
+mod collab_server;
 use std::sync::Arc;
 use tauri_plugin_store::StoreExt;
 use tokio::sync::Mutex;
@@ -49,6 +50,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_android_fs::init())
         .manage(transfer_state)
+        .manage(collab_server::CollabServerState::new())
         .invoke_handler(tauri::generate_handler![
             discovery::generate_password,
             discovery::discover_hosts,
@@ -59,6 +61,9 @@ pub fn run() {
             receiver::receive_file,
             receiver::cancel_receive,
             get_default_folder,
+            collab_server::start_collab_server,
+            collab_server::stop_collab_server,
+            collab_server::get_collab_server_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

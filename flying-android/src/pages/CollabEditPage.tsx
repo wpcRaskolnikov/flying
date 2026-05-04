@@ -13,6 +13,7 @@ import {
   IconButton,
   Snackbar,
   Alert,
+  Switch,
 } from "@mui/material";
 import {
   Group as GroupIcon,
@@ -25,11 +26,18 @@ import { yCollab } from "y-codemirror.next";
 import * as Y from "yjs";
 import { WebsocketProvider } from "y-websocket";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
+import { invoke } from "@tauri-apps/api/core";
 
 interface Peer {
   id: number;
   color: string;
   name: string;
+}
+
+interface ServerStatus {
+  running: boolean;
+  port: number;
+  room_count: number;
 }
 
 const USER_COLORS = [
@@ -47,6 +55,8 @@ function pickColor() {
   return USER_COLORS[Math.floor(Math.random() * USER_COLORS.length)];
 }
 
+const DEFAULT_PORT = 18080;
+
 function CollabEditPage() {
   const [roomName, setRoomName] = useState("");
   const [userName, setUserName] = useState("");
@@ -60,10 +70,65 @@ function CollabEditPage() {
     severity: "success" as "success" | "error" | "info",
   });
 
+  // Local server state
+  const [localServerOn, setLocalServerOn] = useState(false);
+  const [localServerStatus, setLocalServerStatus] = useState<ServerStatus>({
+    running: false,
+    port: 0,
+    room_count: 0,
+  });
+  const [serverStarting, setServerStarting] = useState(false);
+
   const ydocRef = useRef<Y.Doc | null>(null);
   const providerRef = useRef<WebsocketProvider | null>(null);
   const undoRef = useRef<Y.UndoManager | null>(null);
   const collabExtRef = useRef<any>(null);
+
+  // Poll local server status
+  useEffect(() => {
+    const checkStatus = async () => {
+      try {
+        const status = await invoke<ServerStatus>("get_collab_server_status");
+        setLocalServerStatus(status);
+        if (status.running) {
+          setLocalServerOn(true);
+        } else {
+          setLocalServerOn(false);
+        }
+      } catch {
+        // ignore
+      }
+    };
+    checkStatus();
+    const interval = setInterval(checkStatus, 2000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const handleToggleServer = async () => {
+    if (localServerOn) {
+      try {
+        await invoke("stop_collab_server");
+        setLocalServerOn(false);
+        notify("Local server stopped", "info");
+      } catch (e: any) {
+        notify(`Failed to stop server: ${e}`, "error");
+      }
+    } else {
+      setServerStarting(true);
+      try {
+        const result = await invoke("start_collab_server", {
+          port: DEFAULT_PORT,
+        });
+        setLocalServerOn(true);
+        setServerAddr(`127.0.0.1:${DEFAULT_PORT}`);
+        notify(result as string, "success");
+      } catch (e: any) {
+        notify(`Failed to start server: ${e}`, "error");
+      } finally {
+        setServerStarting(false);
+      }
+    }
+  };
 
   const notify = useCallback(
     (message: string, severity: "success" | "error" | "info" = "info") => {
@@ -192,6 +257,37 @@ function CollabEditPage() {
           Enter a server address and room to start editing together.
         </Typography>
 
+        {/* Local server toggle */}
+        <Box sx={{ mb: 2 }}>
+          <Box
+            sx={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              mb: 1,
+            }}
+          >
+            <Typography variant="body2" color="text.secondary">
+              Local Collaboration Server
+            </Typography>
+            {serverStarting ? (
+              <Chip size="small" label="Starting..." color="warning" />
+            ) : (
+              <Switch
+                checked={localServerOn}
+                onChange={handleToggleServer}
+                color="success"
+                size="small"
+              />
+            )}
+          </Box>
+          {localServerOn && (
+            <Alert severity="success" sx={{ mb: 2 }}>
+              Server running on ws://127.0.0.1:{localServerStatus.port}
+            </Alert>
+          )}
+        </Box>
+
         <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
           <TextField
             label="Server Address"
@@ -246,7 +342,7 @@ function CollabEditPage() {
     );
   }
 
-  // --- Editor screen ---
+  // --- editor screen ---
   return (
     <Box
       sx={{
