@@ -102,6 +102,8 @@ function CollabEditPage() {
     const protocol = isLocal ? "ws" : "wss";
     const serverUrl = `${protocol}://${serverAddr.trim()}`;
 
+    notify(`Connecting to ${serverUrl}...`, "info");
+
     const provider = new WebsocketProvider(serverUrl, roomName.trim(), ydoc);
     providerRef.current = provider;
 
@@ -128,15 +130,21 @@ function CollabEditPage() {
       setPeers(list);
     };
 
-    provider.on("status", ({ status }: { status: string }) => {
-      setConnected(status === "connected");
-    });
+    // Wait for connection before entering editor
+    const handleStatus = ({ status }: { status: string }) => {
+      if (status === "connected") {
+        setConnected(true);
+        setInRoom(true);
+        notify(`Joined "${roomName}"`, "success");
+      } else if (status === "disconnected") {
+        setConnected(false);
+        notify("Connection lost, retrying...", "error");
+      }
+    };
 
+    provider.on("status", handleStatus);
     provider.awareness.on("change", updatePeers);
     updatePeers();
-
-    setInRoom(true);
-    notify(`Joined "${roomName}"`, "success");
   };
 
   const handleLeaveRoom = () => {
