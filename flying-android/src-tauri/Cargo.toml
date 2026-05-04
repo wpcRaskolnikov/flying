@@ -1,6 +1,6 @@
 [package]
 name = "flying-android"
-version = "0.6.11"
+version = "0.6.12"
 description = "A simple, secure, and fast file transfer tool"
 authors = ["wpcRaskolnikov <22pcwang@stu.edu.cn>"]
 edition = "2024"
@@ -29,6 +29,7 @@ tauri-plugin-clipboard-manager = "2"
 tauri-plugin-android-fs = "24.1.0"
 tauri-plugin-store = "2"
 ring = "0.17.14"
+wry = "0.53.5"
 yrs = { version = "0.25.0", features = ["sync"] }
 tokio-tungstenite = "0.29"
 futures-util = "0.3"
