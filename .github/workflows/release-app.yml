@@ -33,7 +33,9 @@ jobs:
       - name: setup node
         uses: actions/setup-node@v4
         with:
-          node-version: lts/*
+          # node-version: lts/*
+          # Fixed: https://github.com/nodejs/node/issues/62012 (EBADF fstat with Yarn in v24.15/v25.7+)
+          node-version: 22
 
       - name: install Rust stable (desktop)
         if: matrix.mobile == ''
