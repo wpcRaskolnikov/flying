@@ -50,7 +50,7 @@ function pickColor() {
 function CollabEditPage() {
   const [roomName, setRoomName] = useState("");
   const [userName, setUserName] = useState("");
-  const [serverAddr, setServerAddr] = useState("demos.yjs.dev");
+  const [serverAddr, setServerAddr] = useState("");
   const [peers, setPeers] = useState<Peer[]>([]);
   const [inRoom, setInRoom] = useState(false);
   const [connected, setConnected] = useState(false);
@@ -94,10 +94,15 @@ function CollabEditPage() {
     undoRef.current = undoManager;
 
     const uc = pickColor();
-    const protocol = serverAddr.includes("localhost") ? "ws" : "wss";
-    const wsUrl = `${protocol}://${serverAddr.trim()}/${roomName.trim()}`;
+    const isLocal =
+      serverAddr.includes("localhost") ||
+      serverAddr.includes("127.0.0.1") ||
+      serverAddr.startsWith("192.168.") ||
+      serverAddr.startsWith("10.");
+    const protocol = isLocal ? "ws" : "wss";
+    const serverUrl = `${protocol}://${serverAddr.trim()}`;
 
-    const provider = new WebsocketProvider(wsUrl, roomName.trim(), ydoc);
+    const provider = new WebsocketProvider(serverUrl, roomName.trim(), ydoc);
     providerRef.current = provider;
 
     provider.awareness.setLocalStateField("user", {

@@ -22,3 +22,14 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+release.sh
+
+# 不忽略 cache
+!.yarn/cache
+
+# 但忽略零散临时文件
+.yarn/unplugged
+.yarn/build-state.yml
+.pnp.*
+*.gz
