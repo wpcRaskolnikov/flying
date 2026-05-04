@@ -1,6 +1,6 @@
 [package]
 name = "flying-android"
-version = "0.6.15"
+version = "0.6.16"
 description = "A simple, secure, and fast file transfer tool"
 authors = ["wpcRaskolnikov <22pcwang@stu.edu.cn>"]
 edition = "2024"
@@ -34,3 +34,5 @@ tokio-tungstenite = "0.29"
 futures-util = "0.3"
 tracing = "0.1"
 wry = "=0.53.5"
+tauri-runtime-wry = "=2.9.3"
+tauri-runtime = "=2.9.2"

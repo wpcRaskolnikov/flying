@@ -1571,7 +1571,7 @@ dependencies = [
 
 [[package]]
 name = "flying-android"
-version = "0.6.14"
+version = "0.6.15"
 dependencies = [
  "flying",
  "futures-util",
@@ -1585,6 +1585,8 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-opener",
  "tauri-plugin-store",
+ "tauri-runtime",
+ "tauri-runtime-wry",
  "tokio",
  "tokio-tungstenite",
  "tracing",
@@ -6127,9 +6129,9 @@ dependencies = [
 
 [[package]]
 name = "tauri-runtime"
-version = "2.11.0"
+version = "2.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e42bbcb76237351fbaa02f08d808c537dc12eb5a6eabbf3e517b50056334d95"
+checksum = "87f766fe9f3d1efc4b59b17e7a891ad5ed195fa8d23582abb02e6c9a01137892"
 dependencies = [
  "cookie",
  "dpi",
