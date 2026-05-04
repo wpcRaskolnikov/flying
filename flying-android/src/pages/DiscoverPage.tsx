@@ -132,7 +132,11 @@ function DiscoverPage() {
                     )}
                   </Box>
                 }
-                secondary={`${host.ip}:${host.port}`}
+                secondary={
+                  host.service_type === "collab"
+                    ? `${host.ip}:${host.port}`
+                    : host.ip
+                }
                 slotProps={{
                   primary: { fontWeight: "medium" },
                 }}

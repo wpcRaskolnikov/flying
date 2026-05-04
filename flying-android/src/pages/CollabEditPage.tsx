@@ -13,7 +13,11 @@ import {
   IconButton,
   Snackbar,
   Alert,
+  Select,
   Switch,
+  MenuItem,
+  InputLabel,
+  FormControl,
 } from "@mui/material";
 import {
   Group as GroupIcon,
@@ -61,6 +65,7 @@ function CollabEditPage() {
   const [roomName, setRoomName] = useState("");
   const [userName, setUserName] = useState("");
   const [serverAddr, setServerAddr] = useState("");
+  const [useWss, setUseWss] = useState(false);
   const [peers, setPeers] = useState<Peer[]>([]);
   const [inRoom, setInRoom] = useState(false);
   const [connected, setConnected] = useState(false);
@@ -159,12 +164,7 @@ function CollabEditPage() {
     undoRef.current = undoManager;
 
     const uc = pickColor();
-    const isLocal =
-      serverAddr.includes("localhost") ||
-      serverAddr.includes("127.0.0.1") ||
-      serverAddr.startsWith("192.168.") ||
-      serverAddr.startsWith("10.");
-    const protocol = isLocal ? "ws" : "wss";
+    const protocol = useWss ? "wss" : "ws";
     const serverUrl = `${protocol}://${serverAddr.trim()}`;
 
     notify(`Connecting to ${serverUrl}`, "info");
@@ -289,12 +289,26 @@ function CollabEditPage() {
         </Box>
 
         <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
-          <TextField
-            label="Server Address"
-            value={serverAddr}
-            onChange={(e) => setServerAddr(e.target.value)}
-            placeholder="e.g., demos.yjs.dev or 192.168.1.10:8080"
-          />
+          <Box sx={{ display: "flex", gap: 1, alignItems: "center" }}>
+            <FormControl size="small" sx={{ minWidth: 90 }}>
+              <InputLabel>Protocol</InputLabel>
+              <Select
+                value={useWss ? "wss" : "ws"}
+                label="Protocol"
+                onChange={(e) => setUseWss(e.target.value === "wss")}
+              >
+                <MenuItem value="ws">ws://</MenuItem>
+                <MenuItem value="wss">wss://</MenuItem>
+              </Select>
+            </FormControl>
+            <TextField
+              fullWidth
+              label="Server Address"
+              value={serverAddr}
+              onChange={(e) => setServerAddr(e.target.value)}
+              placeholder="e.g., 192.168.1.10:8080 or demos.yjs.dev"
+            />
+          </Box>
 
           <Box sx={{ display: "flex", gap: 1, alignItems: "center" }}>
             <TextField
