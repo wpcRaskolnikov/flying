@@ -23,7 +23,7 @@ jobs:
           - platform: "windows-latest"
             args: ""
           - platform: "ubuntu-latest"
-            args: "--apk --target aarch64"
+            args: "--apk true --target aarch64"
             mobile: "android"
 
     runs-on: ${{ matrix.platform }}
@@ -94,7 +94,7 @@ jobs:
           base64 -d <<< "${{ secrets.ANDROID_KEY_BASE64 }}" > $RUNNER_TEMP/keystore.jks
           echo "storeFile=$RUNNER_TEMP/keystore.jks" >> keystore.properties
 
-      - uses: tauri-apps/tauri-action@850c373b94f35e16e4de61cbb9f6e4876af8c0b4
+      - uses: tauri-apps/tauri-action@3a44005a6b66d6af4b709c2f646f1ba40c0541be
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
