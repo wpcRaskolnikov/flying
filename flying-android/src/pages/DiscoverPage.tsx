@@ -14,6 +14,8 @@ import {
 import {
   Refresh as RefreshIcon,
   ContentCopy as CopyIcon,
+  Edit as EditIcon,
+  Folder as FolderIcon,
 } from "@mui/icons-material";
 import { invoke } from "@tauri-apps/api/core";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
@@ -21,6 +23,8 @@ import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 interface DiscoveredHost {
   name: string;
   ip: string;
+  port: number;
+  service_type: string;
 }
 
 function DiscoverPage() {
@@ -33,15 +37,20 @@ function DiscoverPage() {
     setHosts([]);
 
     try {
-      const discovered = await invoke<DiscoveredHost[]>("discover_hosts");
-      setHosts(discovered);
+      const [transferHosts, collabHosts] = await Promise.all([
+        invoke<DiscoveredHost[]>("discover_hosts"),
+        invoke<DiscoveredHost[]>("discover_collab_hosts"),
+      ]);
 
-      if (discovered.length === 0) {
+      const allHosts = [...transferHosts, ...collabHosts];
+      setHosts(allHosts);
+
+      if (allHosts.length === 0) {
         setSnackbar({ open: true, message: "No hosts found" });
       } else {
         setSnackbar({
           open: true,
-          message: `Found ${discovered.length} host(s)`,
+          message: `Found ${allHosts.length} host(s)`,
         });
       }
     } catch (error) {
@@ -52,9 +61,9 @@ function DiscoverPage() {
     }
   };
 
-  const handleCopyIp = async (ip: string) => {
-    await writeText(ip);
-    setSnackbar({ open: true, message: `IP ${ip} copied to clipboard` });
+  const handleCopyIp = async (host: DiscoveredHost) => {
+    await writeText(`${host.ip}:${host.port}`);
+    setSnackbar({ open: true, message: `Copied ${host.ip}:${host.port}` });
   };
 
   return (
@@ -105,7 +114,7 @@ function DiscoverPage() {
               secondaryAction={
                 <IconButton
                   edge="end"
-                  onClick={() => handleCopyIp(host.ip)}
+                  onClick={() => handleCopyIp(host)}
                   color="primary"
                 >
                   <CopyIcon />
@@ -113,8 +122,17 @@ function DiscoverPage() {
               }
             >
               <ListItemText
-                primary={host.name || "Unknown Host"}
-                secondary={host.ip}
+                primary={
+                  <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                    {host.name || "Unknown Host"}
+                    {host.service_type === "collab" ? (
+                      <EditIcon fontSize="small" color="primary" />
+                    ) : (
+                      <FolderIcon fontSize="small" color="primary" />
+                    )}
+                  </Box>
+                }
+                secondary={`${host.ip}:${host.port}`}
                 slotProps={{
                   primary: { fontWeight: "medium" },
                 }}

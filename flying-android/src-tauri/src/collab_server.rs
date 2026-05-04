@@ -353,6 +353,7 @@ pub struct CollabServerState {
     pub store: Arc<RoomStore>,
     pub server_handle: StdMutex<Option<JoinHandle<()>>>,
     pub port: StdMutex<u16>,
+    pub mdns_daemon: StdMutex<Option<flying::mdns::ServiceDaemon>>,
 }
 
 impl CollabServerState {
@@ -361,6 +362,7 @@ impl CollabServerState {
             store: Arc::new(RoomStore::new()),
             server_handle: StdMutex::new(None),
             port: StdMutex::new(0),
+            mdns_daemon: StdMutex::new(None),
         }
     }
 }
@@ -428,6 +430,11 @@ pub async fn start_collab_server(
     let actual_port = listener.local_addr().map_err(|e| e.to_string())?.port();
     *state.port.lock().unwrap() = actual_port;
 
+    // Start mDNS broadcast for collab service
+    let mdns = flying::mdns::advertise_collab_service(actual_port)
+        .map_err(|e| format!("Failed to start mDNS broadcast: {}", e))?;
+    *state.mdns_daemon.lock().unwrap() = Some(mdns);
+
     let handle = tokio::spawn(async move {
         info!("Collaboration server started on port {}", actual_port);
         loop {
@@ -445,14 +452,6 @@ pub async fn start_collab_server(
                 let callback = RoomCallback { room_tx };
                 match accept_hdr_async(socket, callback).await {
                     Ok(ws_stream) => {
-                        // The callback already captured the room name
-                        // But since callback takes ownership, the room name must be retrieved here
-                        // Problem: callback is consumed by accept_hdr_async, so we need a different approach
-                        // Actually the callback sends room via channel, so we can receive it here
-                        // However this is synchronous recv which can't be used in async
-                        // Let's just use default room for simplicity, or use tokio::task::spawn_blocking
-
-                        // Actually let's just block briefly since channel send already happened
                         if let Ok(room) = room_rx.recv() {
                             handle_ws(ws_stream, room, store).await;
                         }
@@ -478,6 +477,8 @@ pub async fn stop_collab_server(
         handle.abort();
         *state.port.lock().unwrap() = 0;
         state.store.rooms.lock().unwrap().clear();
+        // Stop mDNS broadcast (ServiceDaemon stops on drop)
+        drop(state.mdns_daemon.lock().unwrap().take());
         Ok("Server stopped".to_string())
     } else {
         Err("No server is running".to_string())

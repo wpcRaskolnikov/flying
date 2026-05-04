@@ -134,7 +134,7 @@ function CollabEditPage() {
     (message: string, severity: "success" | "error" | "info" = "info") => {
       setSnackbar({ open: true, message, severity });
     },
-    []
+    [],
   );
 
   const handleJoinRoom = () => {
@@ -167,7 +167,7 @@ function CollabEditPage() {
     const protocol = isLocal ? "ws" : "wss";
     const serverUrl = `${protocol}://${serverAddr.trim()}`;
 
-    notify(`Connecting to ${serverUrl}...`, "info");
+    notify(`Connecting to ${serverUrl}`, "info");
 
     const provider = new WebsocketProvider(serverUrl, roomName.trim(), ydoc);
     providerRef.current = provider;
@@ -283,7 +283,7 @@ function CollabEditPage() {
           </Box>
           {localServerOn && (
             <Alert severity="success" sx={{ mb: 2 }}>
-              Server running on ws://127.0.0.1:{localServerStatus.port}
+              Server running on ws://0.0.0.0:{localServerStatus.port}
             </Alert>
           )}
         </Box>

@@ -54,6 +54,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             discovery::generate_password,
             discovery::discover_hosts,
+            discovery::discover_collab_hosts,
             file_picker::pick_file,
             file_picker::pick_folder,
             sender::send_file,
