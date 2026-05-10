@@ -1,16 +1,14 @@
 use std::path::PathBuf;
-use std::sync::Arc;
 use tauri::Emitter;
-use tokio::sync::Mutex;
 
 use crate::{TransferState, sender::ConnectionMode};
 
 #[tauri::command]
 pub async fn cancel_receive(
-    state: tauri::State<'_, Arc<Mutex<TransferState>>>,
+    state: tauri::State<'_, TransferState>,
 ) -> Result<(), String> {
-    let mut transfer_state = state.lock().await;
-    if let Some(abort_sender) = transfer_state.receive_abort_handle.take() {
+     
+    if let Some(abort_sender) = state.receive_abort_handle.lock().unwrap().take() {
         let _ = abort_sender.send(());
         Ok(())
     } else {
@@ -28,7 +26,7 @@ pub async fn receive_file(
     _output_dir_uri: String,
     port: u16,
     window: tauri::Window,
-    state: tauri::State<'_, Arc<Mutex<TransferState>>>,
+    state: tauri::State<'_, TransferState>,
 ) -> Result<(), String> {
     let mode = connection_mode.to_flying_mode(connect_ip, relay_addr, remote_peer_id)?;
 
@@ -91,8 +89,7 @@ pub async fn receive_file(
     });
 
     // Store the abort sender
-    let mut transfer_state = state.lock().await;
-    transfer_state.receive_abort_handle = Some(abort_handle);
+    *state.receive_abort_handle.lock().unwrap() = Some(abort_handle);
 
     Ok(())
 }

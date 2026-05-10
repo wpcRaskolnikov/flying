@@ -1,8 +1,6 @@
 use crate::TransferState;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 use tauri::Emitter;
-use tokio::sync::Mutex;
 
 #[cfg(target_os = "android")]
 use {
@@ -59,9 +57,9 @@ impl ConnectionMode {
 }
 
 #[tauri::command]
-pub async fn cancel_send(state: tauri::State<'_, Arc<Mutex<TransferState>>>) -> Result<(), String> {
-    let mut transfer_state = state.lock().await;
-    if let Some(abort_sender) = transfer_state.send_abort_handle.take() {
+pub async fn cancel_send(state: tauri::State<'_, TransferState>) -> Result<(), String> {
+     
+    if let Some(abort_sender) = state.send_abort_handle.lock().unwrap().take() {
         let _ = abort_sender.send(());
         Ok(())
     } else {
@@ -80,7 +78,7 @@ pub async fn send_file(
     port: u16,
     _app: tauri::AppHandle,
     window: tauri::Window,
-    state: tauri::State<'_, Arc<Mutex<TransferState>>>,
+    state: tauri::State<'_, TransferState>,
 ) -> Result<(), String> {
     let mode = connection_mode.to_flying_mode(connect_ip, relay_addr, remote_peer_id)?;
 
@@ -165,8 +163,7 @@ pub async fn send_file(
         }
     });
 
-    let mut transfer_state = state.lock().await;
-    transfer_state.send_abort_handle = Some(abort_handle);
+    *state.send_abort_handle.lock().unwrap() = Some(abort_handle);
 
     Ok(())
 }

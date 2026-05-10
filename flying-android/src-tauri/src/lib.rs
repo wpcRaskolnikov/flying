@@ -3,17 +3,16 @@ mod file_picker;
 mod receiver;
 mod sender;
 mod collab_server;
-use std::sync::Arc;
 use tauri_plugin_store::StoreExt;
-use tokio::sync::Mutex;
+use std::sync::Mutex as StdMutex;
 
 #[cfg(not(target_os = "android"))]
 use tauri::Manager;
 
 #[derive(Default)]
 pub struct TransferState {
-    pub send_abort_handle: Option<tokio::sync::oneshot::Sender<()>>,
-    pub receive_abort_handle: Option<tokio::sync::oneshot::Sender<()>>,
+    pub send_abort_handle: StdMutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    pub receive_abort_handle: StdMutex<Option<tokio::sync::oneshot::Sender<()>>>,
 }
 
 #[tauri::command]
@@ -41,7 +40,7 @@ fn get_default_folder(app: tauri::AppHandle) -> Result<String, String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let transfer_state = Arc::new(Mutex::new(TransferState::default()));
+    let transfer_state = TransferState::default();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::new().build())
