@@ -58,8 +58,10 @@ impl ConnectionMode {
 
 #[tauri::command]
 pub async fn cancel_send(state: tauri::State<'_, TransferState>) -> Result<(), String> {
-     
-    if let Some(abort_sender) = state.send_abort_handle.lock().unwrap().take() {
+    if let Some(mdns) = state.mdns_daemon.lock().unwrap().take() {
+        let _ = mdns.shutdown();
+    }
+    if let Some(abort_sender) = state.abort_handle.lock().unwrap().take() {
         let _ = abort_sender.send(());
         Ok(())
     } else {
@@ -83,6 +85,15 @@ pub async fn send_file(
     let mode = connection_mode.to_flying_mode(connect_ip, relay_addr, remote_peer_id)?;
 
     let (abort_handle, abort_registration) = tokio::sync::oneshot::channel::<()>();
+    let (mdns_tx, mdns_rx) = tokio::sync::oneshot::channel::<flying::mdns::ServiceDaemon>();
+
+    let mdns_daemon_mutex = state.mdns_daemon.clone();
+    tokio::spawn(async move {
+        if let Ok(daemon) = mdns_rx.await {
+            let mut state = mdns_daemon_mutex.lock().unwrap();
+            *state = Some(daemon);
+        }
+    });
 
     tokio::spawn(async move {
         let _ = window.emit("send-start", serde_json::json!({}));
@@ -146,7 +157,7 @@ pub async fn send_file(
                 _ = abort_registration => {
                     Err("Transfer cancelled".to_string())
                 }
-                result = flying::run_sender(&file_path, &password, mode, port, Some(progress_tx), Some(peer_id_tx)) => {
+                result = flying::run_sender(&file_path, &password, mode, port, Some(progress_tx), Some(peer_id_tx), Some(mdns_tx)) => {
                     result.map_err(|e| format!("Send error: {}", e))
                 }
             }
@@ -163,7 +174,7 @@ pub async fn send_file(
         }
     });
 
-    *state.send_abort_handle.lock().unwrap() = Some(abort_handle);
+    *state.abort_handle.lock().unwrap() = Some(abort_handle);
 
     Ok(())
 }
@@ -186,9 +197,9 @@ async fn run_send_android(
         .map_err(|e| format!("Failed to get metadata: {}", e))?;
 
     if metadata.is_dir() {
-        send_folder_android(app, uri, password, mode, port, progress_tx, peer_id_tx).await
+        send_folder_android(app, uri, password, mode, port, progress_tx, peer_id_tx, mdns_tx).await
     } else {
-        send_file_android(app, uri, password, mode, port, progress_tx, peer_id_tx).await
+        send_file_android(app, uri, password, mode, port, progress_tx, peer_id_tx, mdns_tx).await
     }
 }
 
@@ -201,6 +212,7 @@ async fn send_file_android(
     port: u16,
     progress_tx: Option<Sender<u8>>,
     peer_id_tx: Option<tokio::sync::mpsc::Sender<String>>,
+    mdns_tx: Option<tokio::sync::oneshot::Sender<flying::mdns::ServiceDaemon>>,
 ) -> Result<(), String> {
     let api = app.android_fs_async();
 
@@ -220,7 +232,7 @@ async fn send_file_android(
         .map_err(|e| format!("Failed to get file size: {}", e))?
         .len();
 
-    let (mut stream, _mdns_daemon) = flying::establish_connection(&mode, port, peer_id_tx)
+    let (mut stream, _mdns_daemon) = flying::establish_connection(&mode, port, peer_id_tx, mdns_tx)
         .await
         .map_err(|e| format!("Failed to establish connection: {}", e))?;
 

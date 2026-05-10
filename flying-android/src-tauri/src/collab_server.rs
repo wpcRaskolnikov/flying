@@ -6,20 +6,20 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::task::{Context, Poll};
 use tokio::net::TcpListener;
-use tokio::sync::{broadcast, mpsc, Mutex};
+use tokio::sync::{Mutex, broadcast, mpsc};
 use tokio::task::JoinHandle;
-use tokio_tungstenite::tungstenite::handshake::server::{Callback, ErrorResponse, Request, Response};
 use tokio_tungstenite::tungstenite::Message as TungsteniteMsg;
-use tokio_tungstenite::{accept_hdr_async, WebSocketStream};
+use tokio_tungstenite::tungstenite::handshake::server::{
+    Callback, ErrorResponse, Request, Response,
+};
+use tokio_tungstenite::{WebSocketStream, accept_hdr_async};
 use tracing::{debug, info, warn};
-#[allow(unused_imports)]
+use yrs::Update;
 use yrs::encoding::write::Write;
-#[allow(unused_imports)]
 use yrs::sync::protocol::{MSG_SYNC, MSG_SYNC_UPDATE};
 use yrs::sync::{Awareness, Error, Message, Protocol, SyncMessage};
 use yrs::updates::decoder::Decode;
 use yrs::updates::encoder::{Encode, Encoder, EncoderV1};
-use yrs::Update;
 use yrs::{Doc, Subscription};
 
 const BROADCAST_BUFFER: usize = 64;
@@ -41,10 +41,7 @@ impl TungsteniteSink {
 impl futures_util::Sink<Vec<u8>> for TungsteniteSink {
     type Error = Error;
 
-    fn poll_ready(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<(), Self::Error>> {
+    fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         match Pin::new(&mut self.inner).poll_ready(cx) {
             Poll::Pending => Poll::Pending,
             Poll::Ready(Err(e)) => Poll::Ready(Err(Error::Other(Box::new(e)))),
@@ -58,10 +55,7 @@ impl futures_util::Sink<Vec<u8>> for TungsteniteSink {
             .map_err(|e| Error::Other(Box::new(e)))
     }
 
-    fn poll_flush(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<(), Self::Error>> {
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         match Pin::new(&mut self.inner).poll_flush(cx) {
             Poll::Pending => Poll::Pending,
             Poll::Ready(Err(e)) => Poll::Ready(Err(Error::Other(Box::new(e)))),
@@ -69,10 +63,7 @@ impl futures_util::Sink<Vec<u8>> for TungsteniteSink {
         }
     }
 
-    fn poll_close(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<(), Self::Error>> {
+    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         match Pin::new(&mut self.inner).poll_close(cx) {
             Poll::Pending => Poll::Pending,
             Poll::Ready(Err(e)) => Poll::Ready(Err(Error::Other(Box::new(e)))),
@@ -86,7 +77,9 @@ pub struct TungsteniteStream {
 }
 
 impl TungsteniteStream {
-    pub fn new(inner: futures_util::stream::SplitStream<WebSocketStream<tokio::net::TcpStream>>) -> Self {
+    pub fn new(
+        inner: futures_util::stream::SplitStream<WebSocketStream<tokio::net::TcpStream>>,
+    ) -> Self {
         Self { inner }
     }
 }
@@ -183,7 +176,11 @@ impl BroadcastGroup {
         &self.awareness
     }
 
-    pub fn subscribe(&self, sink: Arc<Mutex<TungsteniteSink>>, stream: TungsteniteStream) -> Subscription_ {
+    pub fn subscribe(
+        &self,
+        sink: Arc<Mutex<TungsteniteSink>>,
+        stream: TungsteniteStream,
+    ) -> Subscription_ {
         self.subscribe_with(sink, stream, yrs::sync::DefaultProtocol)
     }
 
@@ -327,7 +324,8 @@ impl RoomStore {
         doc.get_or_insert_text("codemirror");
         let awareness = Arc::new(Awareness::new(doc));
         let bcast = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(BroadcastGroup::new(awareness, BROADCAST_BUFFER))
+            tokio::runtime::Handle::current()
+                .block_on(BroadcastGroup::new(awareness, BROADCAST_BUFFER))
         });
         let bcast = Arc::new(bcast);
         rooms.insert(name.to_string(), bcast.clone());
@@ -348,30 +346,6 @@ impl Default for RoomStore {
 // ---------------------------------------------------------------------------
 // Tauri state + commands
 // ---------------------------------------------------------------------------
-
-pub struct CollabServerState {
-    pub store: Arc<RoomStore>,
-    pub server_handle: StdMutex<Option<JoinHandle<()>>>,
-    pub port: StdMutex<u16>,
-    pub mdns_daemon: StdMutex<Option<flying::mdns::ServiceDaemon>>,
-}
-
-impl CollabServerState {
-    pub fn new() -> Self {
-        Self {
-            store: Arc::new(RoomStore::new()),
-            server_handle: StdMutex::new(None),
-            port: StdMutex::new(0),
-            mdns_daemon: StdMutex::new(None),
-        }
-    }
-}
-
-impl Default for CollabServerState {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 
 // Callback that extracts room name from the HTTP request path
 struct RoomCallback {
@@ -397,7 +371,11 @@ impl Callback for RoomCallback {
 
 use std::result::Result as StdResult;
 
-async fn handle_ws(socket: WebSocketStream<tokio::net::TcpStream>, room: String, store: Arc<RoomStore>) {
+async fn handle_ws(
+    socket: WebSocketStream<tokio::net::TcpStream>,
+    room: String,
+    store: Arc<RoomStore>,
+) {
     info!("WebSocket connected to room: {}", room);
     let bcast = store.get_or_create_room(&room);
     let (write, read) = socket.split();
@@ -412,7 +390,7 @@ async fn handle_ws(socket: WebSocketStream<tokio::net::TcpStream>, room: String,
 
 #[tauri::command]
 pub async fn start_collab_server(
-    state: tauri::State<'_, CollabServerState>,
+    state: tauri::State<'_, crate::CollabServerState>,
     port: u16,
 ) -> Result<String, String> {
     {
@@ -470,15 +448,17 @@ pub async fn start_collab_server(
 
 #[tauri::command]
 pub async fn stop_collab_server(
-    state: tauri::State<'_, CollabServerState>,
+    state: tauri::State<'_, crate::CollabServerState>,
 ) -> Result<String, String> {
     let mut handle_guard = state.server_handle.lock().unwrap();
     if let Some(handle) = handle_guard.take() {
         handle.abort();
         *state.port.lock().unwrap() = 0;
         state.store.rooms.lock().unwrap().clear();
-        // Stop mDNS broadcast (ServiceDaemon stops on drop)
-        drop(state.mdns_daemon.lock().unwrap().take());
+        // Stop mDNS broadcast explicitly
+        if let Some(daemon) = state.mdns_daemon.lock().unwrap().take() {
+            let _ = daemon.shutdown();
+        }
         Ok("Server stopped".to_string())
     } else {
         Err("No server is running".to_string())
@@ -487,7 +467,7 @@ pub async fn stop_collab_server(
 
 #[tauri::command]
 pub async fn get_collab_server_status(
-    state: tauri::State<'_, CollabServerState>,
+    state: tauri::State<'_, crate::CollabServerState>,
 ) -> Result<serde_json::Value, String> {
     let handle_guard = state.server_handle.lock().unwrap();
     let is_running = handle_guard.is_some();

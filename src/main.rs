@@ -150,7 +150,7 @@ async fn main() {
             let result = if persistent {
                 run_sender_persistent(&file, &password, port, None).await
             } else {
-                run_sender(&file, &password, connection_mode, port, None, None).await
+                run_sender(&file, &password, connection_mode, port, None, None, None).await
             };
 
             if let Err(e) = result {
@@ -183,7 +183,7 @@ async fn main() {
             print_session_info("RECEIVE", &password, &connection_mode, Some(&output));
 
             if let Err(e) =
-                run_receiver(&output, &password, connection_mode, port, None, None).await
+                run_receiver(&output, &password, connection_mode, port, None, None, None).await
             {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);

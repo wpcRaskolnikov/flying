@@ -1,18 +1,24 @@
+mod collab_server;
 mod discovery;
 mod file_picker;
 mod receiver;
 mod sender;
-mod collab_server;
-use tauri_plugin_store::StoreExt;
 use std::sync::Mutex as StdMutex;
-
-#[cfg(not(target_os = "android"))]
 use tauri::Manager;
+use tauri_plugin_store::StoreExt;
+
+#[derive(Default, Clone)]
+pub struct TransferState {
+    pub abort_handle: std::sync::Arc<StdMutex<Option<tokio::sync::oneshot::Sender<()>>>>,
+    pub mdns_daemon: std::sync::Arc<StdMutex<Option<flying::mdns::ServiceDaemon>>>,
+}
 
 #[derive(Default)]
-pub struct TransferState {
-    pub send_abort_handle: StdMutex<Option<tokio::sync::oneshot::Sender<()>>>,
-    pub receive_abort_handle: StdMutex<Option<tokio::sync::oneshot::Sender<()>>>,
+pub struct CollabServerState {
+    pub store: std::sync::Arc<collab_server::RoomStore>,
+    pub server_handle: StdMutex<Option<tokio::task::JoinHandle<()>>>,
+    pub port: StdMutex<u16>,
+    pub mdns_daemon: StdMutex<Option<flying::mdns::ServiceDaemon>>,
 }
 
 #[tauri::command]
@@ -40,16 +46,14 @@ fn get_default_folder(app: tauri::AppHandle) -> Result<String, String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let transfer_state = TransferState::default();
-
     tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_android_fs::init())
-        .manage(transfer_state)
-        .manage(collab_server::CollabServerState::new())
+        .manage(TransferState::default())
+        .manage(CollabServerState::default())
         .invoke_handler(tauri::generate_handler![
             discovery::generate_password,
             discovery::discover_hosts,

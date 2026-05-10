@@ -7,8 +7,10 @@ use crate::{TransferState, sender::ConnectionMode};
 pub async fn cancel_receive(
     state: tauri::State<'_, TransferState>,
 ) -> Result<(), String> {
-     
-    if let Some(abort_sender) = state.receive_abort_handle.lock().unwrap().take() {
+    if let Some(mdns) = state.mdns_daemon.lock().unwrap().take() {
+        let _ = mdns.shutdown();
+    }
+    if let Some(abort_sender) = state.abort_handle.lock().unwrap().take() {
         let _ = abort_sender.send(());
         Ok(())
     } else {
@@ -31,6 +33,15 @@ pub async fn receive_file(
     let mode = connection_mode.to_flying_mode(connect_ip, relay_addr, remote_peer_id)?;
 
     let (abort_handle, abort_registration) = tokio::sync::oneshot::channel::<()>();
+    let (mdns_tx, mdns_rx) = tokio::sync::oneshot::channel::<flying::mdns::ServiceDaemon>();
+
+    let mdns_daemon_mutex = state.mdns_daemon.clone();
+    tokio::spawn(async move {
+        if let Ok(daemon) = mdns_rx.await {
+            let mut state = mdns_daemon_mutex.lock().unwrap();
+            *state = Some(daemon);
+        }
+    });
 
     tokio::spawn(async move {
         let _ = window.emit("receive-start", serde_json::json!({}));
@@ -73,7 +84,7 @@ pub async fn receive_file(
             _ = abort_registration => {
                 Err("Transfer cancelled".to_string())
             }
-            result = flying::run_receiver(&output_dir, &password, mode, port, Some(progress_tx), Some(peer_id_tx)) => {
+            result = flying::run_receiver(&output_dir, &password, mode, port, Some(progress_tx), Some(peer_id_tx), Some(mdns_tx)) => {
                 result.map_err(|e| format!("Receive error: {}", e))
             }
         };
@@ -89,7 +100,7 @@ pub async fn receive_file(
     });
 
     // Store the abort sender
-    *state.receive_abort_handle.lock().unwrap() = Some(abort_handle);
+    *state.abort_handle.lock().unwrap() = Some(abort_handle);
 
     Ok(())
 }

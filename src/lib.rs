@@ -102,6 +102,7 @@ pub async fn establish_connection(
     mode: &ConnectionMode,
     port: u16,
     peer_id_tx: Option<Sender<String>>,
+    mdns_tx: Option<tokio::sync::oneshot::Sender<ServiceDaemon>>,
 ) -> anyhow::Result<(Box<dyn NetworkStream>, Option<ServiceDaemon>)> {
     match mode {
         ConnectionMode::AutoDiscover => {
@@ -121,6 +122,10 @@ pub async fn establish_connection(
         ConnectionMode::Listen => {
             let listener = utils::create_listener(port)?;
             let mdns_daemon = mdns::advertise_service(port)?;
+
+            if let Some(tx) = mdns_tx {
+                let _ = tx.send(mdns_daemon.clone());
+            }
 
             println!("Listening on [::]:{} (IPv4/IPv6 dual-stack)...", port);
             println!("Waiting for peer to connect...\n");
@@ -164,9 +169,10 @@ pub async fn run_receiver(
     port: u16,
     progress_tx: Option<Sender<u8>>,
     peer_id_tx: Option<Sender<String>>,
+    mdns_tx: Option<tokio::sync::oneshot::Sender<ServiceDaemon>>,
 ) -> anyhow::Result<()> {
     let (mut stream, mdns_daemon) =
-        establish_connection(&connection_mode, port, peer_id_tx).await?;
+        establish_connection(&connection_mode, port, peer_id_tx, mdns_tx).await?;
 
     let (key, relative_path, is_folder) =
         utils::receive_handshake(stream.as_mut(), VERSION, password).await?;
@@ -198,6 +204,7 @@ pub async fn run_sender(
     port: u16,
     progress_tx: Option<Sender<u8>>,
     peer_id_tx: Option<Sender<String>>,
+    mdns_tx: Option<tokio::sync::oneshot::Sender<ServiceDaemon>>,
 ) -> anyhow::Result<()> {
     let is_folder = file_path.is_dir();
 
@@ -208,7 +215,7 @@ pub async fn run_sender(
         .to_string();
 
     let (mut stream, mdns_daemon) =
-        establish_connection(&connection_mode, port, peer_id_tx).await?;
+        establish_connection(&connection_mode, port, peer_id_tx, mdns_tx).await?;
 
     let key = utils::send_handshake(
         stream.as_mut(),
