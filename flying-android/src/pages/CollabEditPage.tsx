@@ -88,6 +88,7 @@ function CollabEditPage() {
   const providerRef = useRef<WebsocketProvider | null>(null);
   const undoRef = useRef<Y.UndoManager | null>(null);
   const collabExtRef = useRef<any>(null);
+  const [editorExtensions, setEditorExtensions] = useState<any[]>([]);
 
   // Poll local server status
   useEffect(() => {
@@ -95,11 +96,7 @@ function CollabEditPage() {
       try {
         const status = await invoke<ServerStatus>("get_collab_server_status");
         setLocalServerStatus(status);
-        if (status.running) {
-          setLocalServerOn(true);
-        } else {
-          setLocalServerOn(false);
-        }
+        setLocalServerOn(status.running);
       } catch {
         // ignore
       }
@@ -126,6 +123,7 @@ function CollabEditPage() {
         });
         setLocalServerOn(true);
         setServerAddr(`127.0.0.1:${DEFAULT_PORT}`);
+        setUseWss(false);
         notify(result as string, "success");
       } catch (e: any) {
         notify(`Failed to start server: ${e}`, "error");
@@ -181,6 +179,7 @@ function CollabEditPage() {
     collabExtRef.current = yCollab(ytext, provider.awareness, {
       undoManager,
     });
+    setEditorExtensions([collabExtRef.current]);
 
     const updatePeers = () => {
       const states = provider.awareness.getStates();
@@ -217,12 +216,16 @@ function CollabEditPage() {
       providerRef.current.destroy();
       providerRef.current = null;
     }
+    if (undoRef.current) {
+      undoRef.current.destroy();
+      undoRef.current = null;
+    }
     if (ydocRef.current) {
       ydocRef.current.destroy();
       ydocRef.current = null;
     }
-    undoRef.current = null;
     collabExtRef.current = null;
+    setEditorExtensions([]);
     setConnected(false);
     setPeers([]);
     setInRoom(false);
@@ -234,6 +237,7 @@ function CollabEditPage() {
     return () => {
       if (providerRef.current) providerRef.current.destroy();
       if (ydocRef.current) ydocRef.current.destroy();
+      if (undoRef.current) undoRef.current.destroy();
     };
   }, []);
 
@@ -344,7 +348,7 @@ function CollabEditPage() {
         <Snackbar
           open={snackbar.open}
           autoHideDuration={3000}
-          onClose={() => setSnackbar({ ...snackbar, open: false })}
+          onClose={() => setSnackbar((prev) => ({ ...prev, open: false }))}
           anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
           sx={{ bottom: 72 }}
         >
@@ -452,7 +456,7 @@ function CollabEditPage() {
       {/* Editor */}
       <Box sx={{ flexGrow: 1, overflow: "hidden" }}>
         <CodeMirror
-          extensions={collabExtRef.current ? [collabExtRef.current] : []}
+          extensions={editorExtensions}
           height="100%"
           theme="light"
           basicSetup
@@ -462,7 +466,7 @@ function CollabEditPage() {
       <Snackbar
         open={snackbar.open}
         autoHideDuration={3000}
-        onClose={() => setSnackbar({ ...snackbar, open: false })}
+        onClose={() => setSnackbar((prev) => ({ ...prev, open: false }))}
         anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
         sx={{ bottom: 72 }}
       >

@@ -132,7 +132,8 @@ pub async fn send_file(
                     mode,
                     port,
                     Some(progress_tx),
-                    Some(peer_id_tx)
+                    Some(peer_id_tx),
+                    Some(mdns_tx),
                 ) => {
                     result
                 }
@@ -188,6 +189,7 @@ async fn run_send_android(
     port: u16,
     progress_tx: Option<Sender<u8>>,
     peer_id_tx: Option<tokio::sync::mpsc::Sender<String>>,
+    mdns_tx: Option<tokio::sync::oneshot::Sender<flying::mdns::ServiceDaemon>>,
 ) -> Result<(), String> {
     let api = app.android_fs_async();
 
@@ -281,6 +283,7 @@ async fn send_folder_android(
     port: u16,
     progress_tx: Option<tokio::sync::mpsc::Sender<u8>>,
     peer_id_tx: Option<tokio::sync::mpsc::Sender<String>>,
+    mdns_tx: Option<tokio::sync::oneshot::Sender<flying::mdns::ServiceDaemon>>,
 ) -> Result<(), String> {
     let api = app.android_fs_async();
 
@@ -289,7 +292,7 @@ async fn send_folder_android(
         .await
         .map_err(|e| format!("Failed to get folder name: {}", e))?;
 
-    let (mut stream, _mdns_daemon) = flying::establish_connection(&mode, port, peer_id_tx)
+    let (mut stream, _mdns_daemon) = flying::establish_connection(&mode, port, peer_id_tx, mdns_tx)
         .await
         .map_err(|e| format!("Failed to establish connection: {}", e))?;
 
