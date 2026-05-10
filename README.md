@@ -19,7 +19,6 @@ This repository contains two versions:
 - **♻️ Smart duplicate detection** - Skips identical files (single file transfers only)
 - **📊 Real-time progress** - Shows transfer speed and progress
 - **📝 Collaborative editing** - Real-time document sync with others (GUI)
-- **📝 Collaborative editing** - Real-time document sync via Yjs WebSocket server (GUI)
 
 ## Installation
 
