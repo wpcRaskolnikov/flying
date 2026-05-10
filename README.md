@@ -18,6 +18,8 @@ This repository contains two versions:
 - **🔍 Auto-discovery** - Finds peers automatically via mDNS
 - **♻️ Smart duplicate detection** - Skips identical files (single file transfers only)
 - **📊 Real-time progress** - Shows transfer speed and progress
+- **📝 Collaborative editing** - Real-time document sync with others (GUI)
+- **📝 Collaborative editing** - Real-time document sync via Yjs WebSocket server (GUI)
 
 ## Installation
 
@@ -109,6 +111,15 @@ flying receive -l
 # Custom output directory
 flying receive -o ~/Downloads the-password
 ```
+
+## Collaborative Editing
+
+The GUI includes a built-in collaborative editor that lets you:
+
+- Start a local server with one tap
+- Create or join a room to edit together
+- See who's online and their cursor positions
+- Connect to external servers for remote collaboration
 
 ## Contributing
 

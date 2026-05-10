@@ -4,6 +4,7 @@ mod file_picker;
 mod receiver;
 mod sender;
 use std::sync::Mutex as StdMutex;
+#[cfg(not(target_os = "android"))]
 use tauri::Manager;
 use tauri_plugin_store::StoreExt;
 
