@@ -1,12 +1,10 @@
-use futures_util::stream::SplitSink;
-use futures_util::{SinkExt, Stream, StreamExt};
+use futures_util::stream::{SplitSink, SplitStream};
+use futures_util::{SinkExt, StreamExt};
 use std::collections::HashMap;
-use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
-use std::task::{Context, Poll};
 use tokio::net::TcpListener;
-use tokio::sync::{Mutex, broadcast, mpsc};
+use tokio::sync::{Mutex, broadcast};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::Message as TungsteniteMsg;
 use tokio_tungstenite::tungstenite::handshake::server::{
@@ -25,79 +23,6 @@ use yrs::{Doc, Subscription};
 const BROADCAST_BUFFER: usize = 64;
 
 // ---------------------------------------------------------------------------
-// TungsteniteSink / TungsteniteStream – adapt tokio-tungstenite WebSocket into futures Sink / Stream
-// ---------------------------------------------------------------------------
-
-pub struct TungsteniteSink {
-    inner: SplitSink<WebSocketStream<tokio::net::TcpStream>, TungsteniteMsg>,
-}
-
-impl TungsteniteSink {
-    pub fn new(inner: SplitSink<WebSocketStream<tokio::net::TcpStream>, TungsteniteMsg>) -> Self {
-        Self { inner }
-    }
-}
-
-impl futures_util::Sink<Vec<u8>> for TungsteniteSink {
-    type Error = Error;
-
-    fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        match Pin::new(&mut self.inner).poll_ready(cx) {
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(Err(e)) => Poll::Ready(Err(Error::Other(Box::new(e)))),
-            Poll::Ready(Ok(())) => Poll::Ready(Ok(())),
-        }
-    }
-
-    fn start_send(mut self: Pin<&mut Self>, item: Vec<u8>) -> Result<(), Self::Error> {
-        Pin::new(&mut self.inner)
-            .start_send(TungsteniteMsg::Binary(item.into()))
-            .map_err(|e| Error::Other(Box::new(e)))
-    }
-
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        match Pin::new(&mut self.inner).poll_flush(cx) {
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(Err(e)) => Poll::Ready(Err(Error::Other(Box::new(e)))),
-            Poll::Ready(Ok(())) => Poll::Ready(Ok(())),
-        }
-    }
-
-    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        match Pin::new(&mut self.inner).poll_close(cx) {
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(Err(e)) => Poll::Ready(Err(Error::Other(Box::new(e)))),
-            Poll::Ready(Ok(())) => Poll::Ready(Ok(())),
-        }
-    }
-}
-
-pub struct TungsteniteStream {
-    inner: futures_util::stream::SplitStream<WebSocketStream<tokio::net::TcpStream>>,
-}
-
-impl TungsteniteStream {
-    pub fn new(
-        inner: futures_util::stream::SplitStream<WebSocketStream<tokio::net::TcpStream>>,
-    ) -> Self {
-        Self { inner }
-    }
-}
-
-impl Stream for TungsteniteStream {
-    type Item = Result<Vec<u8>, Error>;
-
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        match Pin::new(&mut self.inner).poll_next(cx) {
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(None) => Poll::Ready(None),
-            Poll::Ready(Some(Ok(msg))) => Poll::Ready(Some(Ok(msg.into_data().to_vec()))),
-            Poll::Ready(Some(Err(e))) => Poll::Ready(Some(Err(Error::Other(Box::new(e))))),
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
 // BroadcastGroup – the pub/sub engine for doc + awareness updates
 // ---------------------------------------------------------------------------
 
@@ -108,14 +33,10 @@ pub struct BroadcastGroup {
     awareness_sub: Subscription,
     awareness: Arc<Awareness>,
     sender: broadcast::Sender<Vec<u8>>,
-    awareness_updater: JoinHandle<()>,
 }
 
-unsafe impl Send for BroadcastGroup {}
-unsafe impl Sync for BroadcastGroup {}
-
 impl BroadcastGroup {
-    pub async fn new(awareness: Arc<Awareness>, buffer_capacity: usize) -> Self {
+    pub fn new(awareness: Arc<Awareness>, buffer_capacity: usize) -> Self {
         let (sender, _) = broadcast::channel(buffer_capacity);
 
         // Observe document updates
@@ -132,33 +53,21 @@ impl BroadcastGroup {
             })
             .unwrap();
 
-        // Observe awareness changes via mpsc channel -> dedicated task
-        let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u64>>();
+        // Observe awareness changes
         let sink_tx2 = sender.clone();
         let awareness_weak = Arc::downgrade(&awareness);
         let awareness_sub = awareness.on_update(move |_awareness, e, _origin| {
-            let changed: Vec<u64> = e
-                .added()
-                .iter()
-                .chain(e.updated())
-                .chain(e.removed())
-                .copied()
-                .collect();
-            let _ = tx.send(changed);
-        });
-
-        let awareness_updater = tokio::spawn(async move {
-            while let Some(changed_clients) = rx.recv().await {
-                if let Some(awareness) = awareness_weak.upgrade() {
-                    match awareness.update_with_clients(changed_clients) {
-                        Ok(update) => {
-                            let msg = Message::Awareness(update).encode_v1();
-                            let _ = sink_tx2.send(msg);
-                        }
-                        Err(e) => warn!("awareness update error: {}", e),
-                    }
-                } else {
-                    return;
+            if let Some(awareness) = awareness_weak.upgrade() {
+                let changed: Vec<u64> = e
+                    .added()
+                    .iter()
+                    .chain(e.updated())
+                    .chain(e.removed())
+                    .copied()
+                    .collect();
+                if let Ok(update) = awareness.update_with_clients(changed) {
+                    let msg = Message::Awareness(update).encode_v1();
+                    let _ = sink_tx2.send(msg);
                 }
             }
         });
@@ -168,7 +77,6 @@ impl BroadcastGroup {
             awareness_sub,
             awareness,
             sender,
-            awareness_updater,
         }
     }
 
@@ -178,18 +86,18 @@ impl BroadcastGroup {
 
     pub fn subscribe(
         &self,
-        sink: Arc<Mutex<TungsteniteSink>>,
-        stream: TungsteniteStream,
-    ) -> Subscription_ {
+        sink: Arc<Mutex<SplitSink<WebSocketStream<tokio::net::TcpStream>, TungsteniteMsg>>>,
+        stream: SplitStream<WebSocketStream<tokio::net::TcpStream>>,
+    ) -> (JoinHandle<Result<(), Error>>, JoinHandle<Result<(), Error>>) {
         self.subscribe_with(sink, stream, yrs::sync::DefaultProtocol)
     }
 
     pub fn subscribe_with<P: Protocol + Send + Sync + 'static>(
         &self,
-        sink: Arc<Mutex<TungsteniteSink>>,
-        mut stream: TungsteniteStream,
+        sink: Arc<Mutex<SplitSink<WebSocketStream<tokio::net::TcpStream>, TungsteniteMsg>>>,
+        mut stream: SplitStream<WebSocketStream<tokio::net::TcpStream>>,
         protocol: P,
-    ) -> Subscription_ {
+    ) -> (JoinHandle<Result<(), Error>>, JoinHandle<Result<(), Error>>) {
         // sink_task: forward broadcast channel messages to this client
         let sink_task = {
             let sink = sink.clone();
@@ -197,7 +105,7 @@ impl BroadcastGroup {
             tokio::spawn(async move {
                 while let Ok(msg) = receiver.recv().await {
                     let mut s = sink.lock().await;
-                    if let Err(e) = s.send(msg).await {
+                    if let Err(e) = s.send(TungsteniteMsg::Binary(msg.into())).await {
                         return Err(Error::Other(Box::new(e)));
                     }
                 }
@@ -219,20 +127,24 @@ impl BroadcastGroup {
                 if !payload.is_empty() {
                     if let Some(s) = sink_weak.upgrade() {
                         let mut s = s.lock().await;
-                        s.send(payload)
+                        s.send(TungsteniteMsg::Binary(payload.into()))
                             .await
                             .map_err(|e| Error::Other(Box::new(e)))?;
                     }
                 }
 
                 while let Some(res) = stream.next().await {
-                    let data = res.map_err(|e| Error::Other(Box::new(e)))?;
+                    let data = match res {
+                        Ok(TungsteniteMsg::Binary(data)) => data.to_vec(),
+                        Ok(_) => continue,
+                        Err(e) => return Err(Error::Other(Box::new(e))),
+                    };
                     let msg = Message::decode_v1(&data)?;
                     let reply = Self::handle_msg(&protocol, &awareness, msg).await?;
                     if let Some(reply) = reply {
                         if let Some(sink) = sink_weak.upgrade() {
                             let mut sink = sink.lock().await;
-                            sink.send(reply.encode_v1())
+                            sink.send(TungsteniteMsg::Binary(reply.encode_v1().into()))
                                 .await
                                 .map_err(|e| Error::Other(Box::new(e)))?;
                         } else {
@@ -244,10 +156,7 @@ impl BroadcastGroup {
             })
         };
 
-        Subscription_ {
-            sink_task,
-            stream_task,
-        }
+        (sink_task, stream_task)
     }
 
     async fn handle_msg<P: Protocol>(
@@ -275,27 +184,6 @@ impl BroadcastGroup {
     }
 }
 
-impl Drop for BroadcastGroup {
-    fn drop(&mut self) {
-        self.awareness_updater.abort();
-    }
-}
-
-pub struct Subscription_ {
-    sink_task: JoinHandle<Result<(), Error>>,
-    stream_task: JoinHandle<Result<(), Error>>,
-}
-
-impl Subscription_ {
-    pub async fn completed(self) -> Result<(), Error> {
-        let res = tokio::select! {
-            r1 = self.sink_task => r1,
-            r2 = self.stream_task => r2,
-        };
-        res.map_err(|e| Error::Other(e.into()))?
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Room store – multiple documents keyed by room name
 // ---------------------------------------------------------------------------
@@ -306,13 +194,6 @@ pub struct RoomStore {
 }
 
 impl RoomStore {
-    pub fn new() -> Self {
-        Self {
-            rooms: StdMutex::new(HashMap::new()),
-            doc_counter: AtomicU64::new(0),
-        }
-    }
-
     pub fn get_or_create_room(&self, name: &str) -> Arc<BroadcastGroup> {
         let mut rooms = self.rooms.lock().unwrap();
         if let Some(bcast) = rooms.get(name) {
@@ -320,13 +201,8 @@ impl RoomStore {
         }
         let client_id = self.doc_counter.fetch_add(1, Ordering::SeqCst) + 1;
         let doc = Doc::with_client_id(client_id);
-        // Pre-create the "codemirror" text type so y-codemirror.next works
-        doc.get_or_insert_text("codemirror");
         let awareness = Arc::new(Awareness::new(doc));
-        let bcast = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current()
-                .block_on(BroadcastGroup::new(awareness, BROADCAST_BUFFER))
-        });
+        let bcast = BroadcastGroup::new(awareness, BROADCAST_BUFFER);
         let bcast = Arc::new(bcast);
         rooms.insert(name.to_string(), bcast.clone());
         bcast
@@ -339,7 +215,10 @@ impl RoomStore {
 
 impl Default for RoomStore {
     fn default() -> Self {
-        Self::new()
+        Self {
+            rooms: StdMutex::new(HashMap::new()),
+            doc_counter: AtomicU64::new(0),
+        }
     }
 }
 
@@ -347,7 +226,6 @@ impl Default for RoomStore {
 // Tauri state + commands
 // ---------------------------------------------------------------------------
 
-// Callback that extracts room name from the HTTP request path
 struct RoomCallback {
     room_tx: std::sync::mpsc::Sender<String>,
 }
@@ -379,10 +257,14 @@ async fn handle_ws(
     info!("WebSocket connected to room: {}", room);
     let bcast = store.get_or_create_room(&room);
     let (write, read) = socket.split();
-    let sink = Arc::new(Mutex::new(TungsteniteSink::new(write)));
-    let stream = TungsteniteStream::new(read);
-    let sub = bcast.subscribe(sink, stream);
-    match sub.completed().await {
+    let sink = Arc::new(Mutex::new(write));
+    let stream = read;
+    let (sink_task, stream_task) = bcast.subscribe(sink, stream);
+    let res = tokio::select! {
+        r1 = sink_task => r1,
+        r2 = stream_task => r2,
+    };
+    match res.map_err(|e| Error::Other(e.into())) {
         Ok(_) => debug!("WebSocket disconnected from room: {}", room),
         Err(e) => warn!("WebSocket error in room {}: {}", room, e),
     }
@@ -404,11 +286,8 @@ pub async fn start_collab_server(
     let listener = TcpListener::bind(format!("0.0.0.0:{}", port))
         .await
         .map_err(|e| format!("Failed to bind to port {}: {}", port, e))?;
-
     let actual_port = listener.local_addr().map_err(|e| e.to_string())?.port();
     *state.port.lock().unwrap() = actual_port;
-
-    // Start mDNS broadcast for collab service
     let mdns = flying::mdns::advertise_collab_service(actual_port)
         .map_err(|e| format!("Failed to start mDNS broadcast: {}", e))?;
     *state.mdns_daemon.lock().unwrap() = Some(mdns);
@@ -455,7 +334,6 @@ pub async fn stop_collab_server(
         handle.abort();
         *state.port.lock().unwrap() = 0;
         state.store.rooms.lock().unwrap().clear();
-        // Stop mDNS broadcast explicitly
         if let Some(daemon) = state.mdns_daemon.lock().unwrap().take() {
             let _ = daemon.shutdown();
         }
