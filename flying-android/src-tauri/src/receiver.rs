@@ -1,5 +1,8 @@
 use crate::sender::ConnectionMode;
 use crate::utils::TransferState;
+use std::sync::Arc;
+
+use flying::mdns::ServiceDaemon;
 
 use tauri::Emitter;
 
@@ -35,9 +38,9 @@ pub async fn receive_file(
     let mode = connection_mode.to_flying_mode(connect_ip, relay_addr, remote_peer_id)?;
 
     let (abort_handle, abort_registration) = oneshot::channel::<()>();
-    let (mdns_tx, mdns_rx) = oneshot::channel::<flying::mdns::ServiceDaemon>();
+    let (mdns_tx, mdns_rx) = oneshot::channel::<ServiceDaemon>();
 
-    let mdns_daemon_mutex = state.mdns_daemon.clone();
+    let mdns_daemon_mutex = Arc::clone(&state.mdns_daemon);
     tokio::spawn(async move {
         if let Ok(daemon) = mdns_rx.await {
             let mut state = mdns_daemon_mutex.lock().unwrap();

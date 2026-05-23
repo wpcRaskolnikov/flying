@@ -1,4 +1,7 @@
 use crate::utils::TransferState;
+use std::sync::Arc;
+
+use flying::mdns::ServiceDaemon;
 
 use tauri::Emitter;
 
@@ -90,9 +93,9 @@ pub async fn send_file(
     let mode = connection_mode.to_flying_mode(connect_ip, relay_addr, remote_peer_id)?;
 
     let (abort_handle, abort_registration) = oneshot::channel::<()>();
-    let (mdns_tx, mdns_rx) = oneshot::channel::<flying::mdns::ServiceDaemon>();
+    let (mdns_tx, mdns_rx) = oneshot::channel::<ServiceDaemon>();
 
-    let mdns_daemon_mutex = state.mdns_daemon.clone();
+    let mdns_daemon_mutex = Arc::clone(&state.mdns_daemon);
     tokio::spawn(async move {
         if let Ok(daemon) = mdns_rx.await {
             let mut state = mdns_daemon_mutex.lock().unwrap();
@@ -192,9 +195,9 @@ async fn run_send_android(
     password: &str,
     mode: flying::ConnectionMode,
     port: u16,
-    progress_tx: Option<Sender<u8>>,
+    progress_tx: Option<mpsc::Sender<u8>>,
     peer_id_tx: Option<mpsc::Sender<String>>,
-    mdns_tx: Option<oneshot::Sender<flying::mdns::ServiceDaemon>>,
+    mdns_tx: Option<oneshot::Sender<ServiceDaemon>>,
 ) -> Result<(), String> {
     let api = app.android_fs_async();
 
@@ -237,9 +240,9 @@ async fn send_file_android(
     password: &str,
     mode: flying::ConnectionMode,
     port: u16,
-    progress_tx: Option<Sender<u8>>,
+    progress_tx: Option<mpsc::Sender<u8>>,
     peer_id_tx: Option<mpsc::Sender<String>>,
-    mdns_tx: Option<oneshot::Sender<flying::mdns::ServiceDaemon>>,
+    mdns_tx: Option<oneshot::Sender<ServiceDaemon>>,
 ) -> Result<(), String> {
     let api = app.android_fs_async();
 
@@ -308,7 +311,7 @@ async fn send_folder_android(
     port: u16,
     progress_tx: Option<mpsc::Sender<u8>>,
     peer_id_tx: Option<mpsc::Sender<String>>,
-    mdns_tx: Option<oneshot::Sender<flying::mdns::ServiceDaemon>>,
+    mdns_tx: Option<oneshot::Sender<ServiceDaemon>>,
 ) -> Result<(), String> {
     let api = app.android_fs_async();
 

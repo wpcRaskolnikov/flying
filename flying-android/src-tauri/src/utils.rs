@@ -1,3 +1,5 @@
+use flying::mdns::ServiceDaemon;
+
 #[cfg(not(target_os = "android"))]
 use tauri::Manager;
 use tauri_plugin_store::StoreExt;
@@ -56,10 +58,6 @@ impl RoomManager {
 
     pub fn room_count(&self) -> usize {
         self.room_map.lock().unwrap().len()
-    }
-
-    pub fn clear_rooms(&self) {
-        self.room_map.lock().unwrap().clear();
     }
 }
 
@@ -192,15 +190,14 @@ impl Room {
 #[derive(Default, Clone)]
 pub struct TransferState {
     pub abort_handle: Arc<StdMutex<Option<OneshotSender<()>>>>,
-    pub mdns_daemon: Arc<StdMutex<Option<flying::mdns::ServiceDaemon>>>,
+    pub mdns_daemon: Arc<StdMutex<Option<ServiceDaemon>>>,
 }
 
 #[derive(Default)]
 pub struct CollabServerState {
     pub room_manager: Arc<RoomManager>,
     pub server_handle: StdMutex<Option<JoinHandle<()>>>,
-    pub port: StdMutex<u16>,
-    pub mdns_daemon: StdMutex<Option<flying::mdns::ServiceDaemon>>,
+    pub mdns_daemon: StdMutex<Option<ServiceDaemon>>,
 }
 
 #[tauri::command]

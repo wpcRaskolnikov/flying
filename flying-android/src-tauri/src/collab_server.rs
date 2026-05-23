@@ -53,7 +53,7 @@ pub async fn handle_ws(
 pub async fn start_collab_server(
     state: tauri::State<'_, CollabServerState>,
     port: u16,
-) -> Result<String, String> {
+) -> Result<(), String> {
     // Use block scope to release MutexGuard
     {
         let handle_guard = state.server_handle.lock().unwrap();
@@ -62,7 +62,7 @@ pub async fn start_collab_server(
         }
     }
 
-    let room_manager = state.room_manager.clone();
+    let room_manager = Arc::clone(&state.room_manager);
     let addr = format!("[::]:{}", port)
         .parse::<std::net::SocketAddr>()
         .map_err(|e| e.to_string())?;
@@ -79,7 +79,6 @@ pub async fn start_collab_server(
     let listener = TcpListener::from_std(std_listener)
         .map_err(|e| format!("Failed to create listener: {}", e))?;
     let actual_port = listener.local_addr().map_err(|e| e.to_string())?.port();
-    *state.port.lock().unwrap() = actual_port;
     let mdns = advertise_collab_service(actual_port)
         .map_err(|e| format!("Failed to start mDNS broadcast: {}", e))?;
     *state.mdns_daemon.lock().unwrap() = Some(mdns);
@@ -95,7 +94,7 @@ pub async fn start_collab_server(
                 }
             };
 
-            let room_manager = room_manager.clone();
+            let room_manager = Arc::clone(&room_manager);
             tokio::spawn(async move {
                 let (room_tx, room_rx) = std::sync::mpsc::channel::<String>();
                 let callback = RoomCallback { room_tx };
@@ -114,24 +113,19 @@ pub async fn start_collab_server(
     });
 
     *state.server_handle.lock().unwrap() = Some(handle);
-    Ok(format!("Server started on port {}", actual_port))
+    Ok(())
 }
 
 #[tauri::command]
-pub async fn stop_collab_server(
-    state: tauri::State<'_, CollabServerState>,
-) -> Result<String, String> {
-    let mut handle_guard = state.server_handle.lock().unwrap();
-    if let Some(handle) = handle_guard.take() {
+pub async fn stop_collab_server(state: tauri::State<'_, CollabServerState>) -> Result<(), String> {
+    if let Some(daemon) = state.mdns_daemon.lock().unwrap().take() {
+        let _ = daemon.shutdown();
+    }
+    if let Some(handle) = state.server_handle.lock().unwrap().take() {
         handle.abort();
-        *state.port.lock().unwrap() = 0;
-        state.room_manager.clear_rooms();
-        if let Some(daemon) = state.mdns_daemon.lock().unwrap().take() {
-            let _ = daemon.shutdown();
-        }
-        Ok("Server stopped".to_string())
+        Ok(())
     } else {
-        Err("No server is running".to_string())
+        return Err("No server is running".to_string());
     }
 }
 
@@ -141,11 +135,9 @@ pub async fn get_collab_server_status(
 ) -> Result<serde_json::Value, String> {
     let handle_guard = state.server_handle.lock().unwrap();
     let is_running = handle_guard.is_some();
-    let port = *state.port.lock().unwrap();
     let room_count = state.room_manager.room_count();
     Ok(serde_json::json!({
         "running": is_running,
-        "port": port,
         "room_count": room_count
     }))
 }
