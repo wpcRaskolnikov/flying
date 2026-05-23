@@ -196,7 +196,7 @@ pub struct TransferState {
 #[derive(Default)]
 pub struct CollabServerState {
     pub room_manager: Arc<RoomManager>,
-    pub server_handle: StdMutex<Option<JoinHandle<()>>>,
+    pub abort_handle: StdMutex<Option<OneshotSender<()>>>,
     pub mdns_daemon: StdMutex<Option<ServiceDaemon>>,
 }
 

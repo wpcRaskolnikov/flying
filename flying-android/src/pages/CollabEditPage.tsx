@@ -90,20 +90,32 @@ function CollabEditPage() {
   const collabExtRef = useRef<any>(null);
   const [editorExtensions, setEditorExtensions] = useState<any[]>([]);
 
+  // Persistent refs for event handlers so they can be reliably removed
+  const handleStatusRef = useRef<((data: { status: string }) => void) | null>(
+    null,
+  );
+  const updatePeersRef = useRef<(() => void) | null>(null);
+
   // Poll local server status
   useEffect(() => {
+    let isMounted = true;
     const checkStatus = async () => {
       try {
         const status = await invoke<ServerStatus>("get_collab_server_status");
-        setLocalServerStatus(status);
-        setLocalServerOn(status.running);
+        if (isMounted) {
+          setLocalServerStatus(status);
+          setLocalServerOn(status.running);
+        }
       } catch {
         // ignore
       }
     };
     checkStatus();
     const interval = setInterval(checkStatus, 2000);
-    return () => clearInterval(interval);
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
   }, []);
 
   const handleToggleServer = async () => {
@@ -193,6 +205,7 @@ function CollabEditPage() {
       });
       setPeers(list);
     };
+    updatePeersRef.current = updatePeers;
 
     // Wait for connection before entering editor
     const handleStatus = ({ status }: { status: string }) => {
@@ -205,6 +218,7 @@ function CollabEditPage() {
         notify("Connection lost, retrying...", "error");
       }
     };
+    handleStatusRef.current = handleStatus;
 
     provider.on("status", handleStatus);
     provider.awareness.on("change", updatePeers);
@@ -213,6 +227,13 @@ function CollabEditPage() {
 
   const handleLeaveRoom = () => {
     if (providerRef.current) {
+      // Remove event listeners before destroying to prevent memory leaks
+      if (handleStatusRef.current) {
+        providerRef.current.off("status", handleStatusRef.current);
+      }
+      if (providerRef.current.awareness && updatePeersRef.current) {
+        providerRef.current.awareness.off("change", updatePeersRef.current);
+      }
       providerRef.current.destroy();
       providerRef.current = null;
     }
@@ -229,13 +250,23 @@ function CollabEditPage() {
     setConnected(false);
     setPeers([]);
     setInRoom(false);
+    handleStatusRef.current = null;
+    updatePeersRef.current = null;
     notify("Left the room", "info");
   };
 
   // Cleanup on unmount
   useEffect(() => {
     return () => {
-      if (providerRef.current) providerRef.current.destroy();
+      if (providerRef.current) {
+        if (handleStatusRef.current) {
+          providerRef.current.off("status", handleStatusRef.current);
+        }
+        if (providerRef.current.awareness && updatePeersRef.current) {
+          providerRef.current.awareness.off("change", updatePeersRef.current);
+        }
+        providerRef.current.destroy();
+      }
       if (ydocRef.current) ydocRef.current.destroy();
       if (undoRef.current) undoRef.current.destroy();
     };
