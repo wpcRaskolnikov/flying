@@ -1578,6 +1578,7 @@ dependencies = [
  "ring",
  "serde",
  "serde_json",
+ "socket2 0.6.3",
  "tauri",
  "tauri-build",
  "tauri-plugin-android-fs",

@@ -1,12 +1,14 @@
-use std::path::PathBuf;
+use crate::sender::ConnectionMode;
+use crate::utils::TransferState;
+
 use tauri::Emitter;
 
-use crate::{TransferState, sender::ConnectionMode};
+use std::path::PathBuf;
+
+use tokio::sync::{mpsc, oneshot};
 
 #[tauri::command]
-pub async fn cancel_receive(
-    state: tauri::State<'_, TransferState>,
-) -> Result<(), String> {
+pub async fn cancel_receive(state: tauri::State<'_, TransferState>) -> Result<(), String> {
     if let Some(mdns) = state.mdns_daemon.lock().unwrap().take() {
         let _ = mdns.shutdown();
     }
@@ -32,8 +34,8 @@ pub async fn receive_file(
 ) -> Result<(), String> {
     let mode = connection_mode.to_flying_mode(connect_ip, relay_addr, remote_peer_id)?;
 
-    let (abort_handle, abort_registration) = tokio::sync::oneshot::channel::<()>();
-    let (mdns_tx, mdns_rx) = tokio::sync::oneshot::channel::<flying::mdns::ServiceDaemon>();
+    let (abort_handle, abort_registration) = oneshot::channel::<()>();
+    let (mdns_tx, mdns_rx) = oneshot::channel::<flying::mdns::ServiceDaemon>();
 
     let mdns_daemon_mutex = state.mdns_daemon.clone();
     tokio::spawn(async move {
@@ -62,7 +64,7 @@ pub async fn receive_file(
             output_dir = PathBuf::from(_output_dir_uri);
         }
 
-        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(32);
+        let (progress_tx, mut progress_rx) = mpsc::channel(32);
         let window_clone = window.clone();
         tokio::spawn(async move {
             while let Some(percent) = progress_rx.recv().await {
@@ -71,7 +73,7 @@ pub async fn receive_file(
         });
 
         // Create peer ID channel for receiving peer ID
-        let (peer_id_tx, mut peer_id_rx) = tokio::sync::mpsc::channel(1);
+        let (peer_id_tx, mut peer_id_rx) = mpsc::channel(1);
         let window_peer_id = window.clone();
         tokio::spawn(async move {
             if let Some(peer_id) = peer_id_rx.recv().await {

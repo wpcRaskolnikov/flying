@@ -62,9 +62,14 @@ function DiscoverPage() {
   };
 
   const handleCopyIp = async (host: DiscoveredHost) => {
-    await writeText(`${host.ip}:${host.port}`);
-    setSnackbar({ open: true, message: `Copied ${host.ip}:${host.port}` });
+    const ipPart = isIpv6(host.ip) ? `[${host.ip}]` : host.ip;
+    const text =
+      host.service_type === "collab" ? `${ipPart}:${host.port}` : host.ip;
+    await writeText(text);
+    setSnackbar({ open: true, message: `Copied ${text}` });
   };
+
+  const isIpv6 = (ip: string) => ip.includes(":");
 
   return (
     <Box sx={{ p: 2, pt: 3 }}>
@@ -134,7 +139,7 @@ function DiscoverPage() {
                 }
                 secondary={
                   host.service_type === "collab"
-                    ? `${host.ip}:${host.port}`
+                    ? `${isIpv6(host.ip) ? `[${host.ip}]` : host.ip}:${host.port}`
                     : host.ip
                 }
                 slotProps={{

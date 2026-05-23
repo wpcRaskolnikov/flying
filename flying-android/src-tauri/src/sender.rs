@@ -1,11 +1,16 @@
-use crate::TransferState;
-use serde::{Deserialize, Serialize};
+use crate::utils::TransferState;
+
 use tauri::Emitter;
+
+use serde::{Deserialize, Serialize};
+
+use tokio::sync::{mpsc, oneshot};
 
 #[cfg(target_os = "android")]
 use {
     tauri_plugin_android_fs::{AndroidFsExt, Entry, FileUri},
-    tokio::{io::AsyncReadExt, io::AsyncWriteExt, sync::mpsc::Sender},
+    tokio::fs::File as TokioFile,
+    tokio::io::{AsyncReadExt, AsyncWriteExt},
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -84,8 +89,8 @@ pub async fn send_file(
 ) -> Result<(), String> {
     let mode = connection_mode.to_flying_mode(connect_ip, relay_addr, remote_peer_id)?;
 
-    let (abort_handle, abort_registration) = tokio::sync::oneshot::channel::<()>();
-    let (mdns_tx, mdns_rx) = tokio::sync::oneshot::channel::<flying::mdns::ServiceDaemon>();
+    let (abort_handle, abort_registration) = oneshot::channel::<()>();
+    let (mdns_tx, mdns_rx) = oneshot::channel::<flying::mdns::ServiceDaemon>();
 
     let mdns_daemon_mutex = state.mdns_daemon.clone();
     tokio::spawn(async move {
@@ -99,7 +104,7 @@ pub async fn send_file(
         let _ = window.emit("send-start", serde_json::json!({}));
 
         // Create peer ID channel for receiving peer ID
-        let (peer_id_tx, mut peer_id_rx) = tokio::sync::mpsc::channel(1);
+        let (peer_id_tx, mut peer_id_rx) = mpsc::channel(1);
         let window_peer_id = window.clone();
         tokio::spawn(async move {
             if let Some(peer_id) = peer_id_rx.recv().await {
@@ -112,7 +117,7 @@ pub async fn send_file(
             let uri = FileUri::from_json_str(&file_uri)
                 .map_err(|e| format!("Failed to parse URI: {}", e))?;
 
-            let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(32);
+            let (progress_tx, mut progress_rx) = mpsc::channel(32);
             let window_clone = window.clone();
 
             tokio::spawn(async move {
@@ -145,7 +150,7 @@ pub async fn send_file(
         let result: Result<(), String> = async {
             let file_path = std::path::PathBuf::from(&file_uri);
 
-            let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(32);
+            let (progress_tx, mut progress_rx) = mpsc::channel(32);
             let window_clone = window.clone();
 
             tokio::spawn(async move {
@@ -188,8 +193,8 @@ async fn run_send_android(
     mode: flying::ConnectionMode,
     port: u16,
     progress_tx: Option<Sender<u8>>,
-    peer_id_tx: Option<tokio::sync::mpsc::Sender<String>>,
-    mdns_tx: Option<tokio::sync::oneshot::Sender<flying::mdns::ServiceDaemon>>,
+    peer_id_tx: Option<mpsc::Sender<String>>,
+    mdns_tx: Option<oneshot::Sender<flying::mdns::ServiceDaemon>>,
 ) -> Result<(), String> {
     let api = app.android_fs_async();
 
@@ -199,9 +204,29 @@ async fn run_send_android(
         .map_err(|e| format!("Failed to get metadata: {}", e))?;
 
     if metadata.is_dir() {
-        send_folder_android(app, uri, password, mode, port, progress_tx, peer_id_tx, mdns_tx).await
+        send_folder_android(
+            app,
+            uri,
+            password,
+            mode,
+            port,
+            progress_tx,
+            peer_id_tx,
+            mdns_tx,
+        )
+        .await
     } else {
-        send_file_android(app, uri, password, mode, port, progress_tx, peer_id_tx, mdns_tx).await
+        send_file_android(
+            app,
+            uri,
+            password,
+            mode,
+            port,
+            progress_tx,
+            peer_id_tx,
+            mdns_tx,
+        )
+        .await
     }
 }
 
@@ -213,8 +238,8 @@ async fn send_file_android(
     mode: flying::ConnectionMode,
     port: u16,
     progress_tx: Option<Sender<u8>>,
-    peer_id_tx: Option<tokio::sync::mpsc::Sender<String>>,
-    mdns_tx: Option<tokio::sync::oneshot::Sender<flying::mdns::ServiceDaemon>>,
+    peer_id_tx: Option<mpsc::Sender<String>>,
+    mdns_tx: Option<oneshot::Sender<flying::mdns::ServiceDaemon>>,
 ) -> Result<(), String> {
     let api = app.android_fs_async();
 
@@ -249,7 +274,7 @@ async fn send_file_android(
     .await
     .map_err(|e| format!("Handshake failed: {}", e))?;
 
-    let mut tokio_file = tokio::fs::File::from_std(source_file);
+    let mut tokio_file = TokioFile::from_std(source_file);
     flying::send::send_metadata(&mut stream, &file_name, file_size)
         .await
         .map_err(|e| format!("Failed to send metadata: {}", e))?;
@@ -281,9 +306,9 @@ async fn send_folder_android(
     password: &str,
     mode: flying::ConnectionMode,
     port: u16,
-    progress_tx: Option<tokio::sync::mpsc::Sender<u8>>,
-    peer_id_tx: Option<tokio::sync::mpsc::Sender<String>>,
-    mdns_tx: Option<tokio::sync::oneshot::Sender<flying::mdns::ServiceDaemon>>,
+    progress_tx: Option<mpsc::Sender<u8>>,
+    peer_id_tx: Option<mpsc::Sender<String>>,
+    mdns_tx: Option<oneshot::Sender<flying::mdns::ServiceDaemon>>,
 ) -> Result<(), String> {
     let api = app.android_fs_async();
 
@@ -308,7 +333,7 @@ async fn send_folder_android(
         dir_uri: &FileUri,
         base_path: &str,
         key: &ring::aead::LessSafeKey,
-        progress_tx: &Option<tokio::sync::mpsc::Sender<u8>>,
+        progress_tx: &Option<mpsc::Sender<u8>>,
     ) -> Result<(), String> {
         let api = app.android_fs_async();
 
@@ -333,7 +358,7 @@ async fn send_folder_android(
                         .open_file_readable(&uri)
                         .await
                         .map_err(|e| format!("Failed to open file {}: {}", relative_path, e))?;
-                    let tokio_file = tokio::fs::File::from_std(file);
+                    let tokio_file = TokioFile::from_std(file);
 
                     flying::send::encrypt_and_send(
                         stream,
