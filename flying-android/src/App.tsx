@@ -4,9 +4,9 @@ import {
   ThemeProvider,
   createTheme,
   CssBaseline,
+  Paper,
   BottomNavigation,
   BottomNavigationAction,
-  Paper,
 } from "@mui/material";
 import {
   Search as SearchIcon,
@@ -15,7 +15,21 @@ import {
   Edit as EditIcon,
   Settings as SettingsIcon,
 } from "@mui/icons-material";
-import { DiscoverPage, SendPage, ReceivePage, SettingsPage, CollabEditPage } from "./pages";
+import {
+  DiscoverPage,
+  SendPage,
+  ReceivePage,
+  SettingsPage,
+  CollabEditPage,
+} from "./pages";
+
+const tabs = [
+  { label: "Discover", icon: <SearchIcon />, component: <DiscoverPage /> },
+  { label: "Send", icon: <SendIcon />, component: <SendPage /> },
+  { label: "Receive", icon: <DownloadIcon />, component: <ReceivePage /> },
+  { label: "Collab", icon: <EditIcon />, component: <CollabEditPage /> },
+  { label: "Settings", icon: <SettingsIcon />, component: <SettingsPage /> },
+];
 
 const theme = createTheme({
   palette: {
@@ -47,23 +61,15 @@ function App() {
             overflow: "auto",
             pb: 7,
             pt: "env(safe-area-inset-top)",
+            pl: "env(safe-area-inset-left)",
+            pr: "env(safe-area-inset-right)",
           }}
         >
-          <Box sx={{ display: currentTab === 0 ? "block" : "none" }}>
-            <DiscoverPage />
-          </Box>
-          <Box sx={{ display: currentTab === 1 ? "block" : "none" }}>
-            <SendPage />
-          </Box>
-          <Box sx={{ display: currentTab === 2 ? "block" : "none" }}>
-            <ReceivePage />
-          </Box>
-          <Box sx={{ display: currentTab === 3 ? "block" : "none" }}>
-            <CollabEditPage />
-          </Box>
-          <Box sx={{ display: currentTab === 4 ? "block" : "none" }}>
-            <SettingsPage />
-          </Box>
+          {tabs.map((tab, index) => (
+            <Box key={index} hidden={currentTab !== index}>
+              {tab.component}
+            </Box>
+          ))}
         </Box>
 
         {/* Bottom Navigation */}
@@ -74,21 +80,23 @@ function App() {
             left: 0,
             right: 0,
             pb: "env(safe-area-inset-bottom)",
+            pl: "env(safe-area-inset-left)",
+            pr: "env(safe-area-inset-right)",
           }}
           elevation={3}
         >
           <BottomNavigation
             value={currentTab}
-            onChange={(_event, newValue) => {
-              setCurrentTab(newValue);
-            }}
+            onChange={(_event, newValue) => setCurrentTab(newValue)}
             showLabels
           >
-            <BottomNavigationAction label="Discover" icon={<SearchIcon />} />
-            <BottomNavigationAction label="Send" icon={<SendIcon />} />
-            <BottomNavigationAction label="Receive" icon={<DownloadIcon />} />
-            <BottomNavigationAction label="Collab" icon={<EditIcon />} />
-            <BottomNavigationAction label="Settings" icon={<SettingsIcon />} />
+            {tabs.map((tab, index) => (
+              <BottomNavigationAction
+                key={index}
+                label={tab.label}
+                icon={tab.icon}
+              />
+            ))}
           </BottomNavigation>
         </Paper>
       </Box>

@@ -22,10 +22,6 @@ function SettingsPage() {
     severity: "success" as "success" | "error",
   });
 
-  useEffect(() => {
-    loadSettings();
-  }, []);
-
   const loadSettings = async () => {
     try {
       const folderPath = await invoke<string>("get_default_folder");
@@ -34,7 +30,6 @@ function SettingsPage() {
       const versionStr = await getVersion();
       setVersion(versionStr);
 
-      // Load port from store
       const storeInstance = await Store.load("settings.json");
       const savedPort = await storeInstance.get<number>("port");
       if (savedPort) {
@@ -44,6 +39,10 @@ function SettingsPage() {
       console.error("Failed to load settings:", error);
     }
   };
+
+  useEffect(() => {
+    loadSettings();
+  }, []);
 
   const handleSelectFolder = async () => {
     try {
