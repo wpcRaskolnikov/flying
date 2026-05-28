@@ -3,46 +3,36 @@ import {
   Box,
   TextField,
   Typography,
-  Snackbar,
   Alert,
   IconButton,
 } from "@mui/material";
-import { Folder as FolderIcon, Save as SaveIcon } from "@mui/icons-material";
+import { Folder as FolderIcon } from "@mui/icons-material";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
-import { Store } from "@tauri-apps/plugin-store";
+import { useAtom } from "jotai";
+import { portAtom } from "../store";
+import { useSnackbar } from "../hooks";
 
 function SettingsPage() {
   const [defaultFolder, setDefaultFolder] = useState<string>("");
-  const [port, setPort] = useState<number>(3290);
+  const [port, setPort] = useAtom(portAtom);
   const [version, setVersion] = useState<string>("");
-  const [snackbar, setSnackbar] = useState({
-    open: false,
-    message: "",
-    severity: "success" as "success" | "error",
-  });
+  const { showSnackbar } = useSnackbar();
+
+  useEffect(() => {
+    loadSettings();
+  }, []);
 
   const loadSettings = async () => {
     try {
       const folderPath = await invoke<string>("get_default_folder");
       setDefaultFolder(folderPath);
-
       const versionStr = await getVersion();
       setVersion(versionStr);
-
-      const storeInstance = await Store.load("settings.json");
-      const savedPort = await storeInstance.get<number>("port");
-      if (savedPort) {
-        setPort(savedPort);
-      }
     } catch (error) {
       console.error("Failed to load settings:", error);
     }
   };
-
-  useEffect(() => {
-    loadSettings();
-  }, []);
 
   const handleSelectFolder = async () => {
     try {
@@ -50,63 +40,16 @@ function SettingsPage() {
       if (result) {
         const [uri, _name] = result;
         setDefaultFolder(uri);
-
-        // Reload store to ensure valid resource
-        const storeInstance = await Store.load("settings.json");
-        await storeInstance.set("default_folder_path", uri);
-        await storeInstance.save();
-
-        setSnackbar({
-          open: true,
-          message: "Default folder updated",
-          severity: "success",
-        });
+        showSnackbar("Default folder updated", "success");
       }
     } catch (error) {
       console.error("Failed to select folder:", error);
-      setSnackbar({
-        open: true,
-        message: `Failed to select folder: ${error}`,
-        severity: "error",
-      });
-    }
-  };
-
-  const handleSavePort = async (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-
-    try {
-      if (isNaN(port) || port < 1 || port > 65535) {
-        setSnackbar({
-          open: true,
-          message: "Port must be between 1 and 65535",
-          severity: "error",
-        });
-        return;
-      }
-
-      // Reload store to ensure valid resource
-      const storeInstance = await Store.load("settings.json");
-      await storeInstance.set("port", port);
-      await storeInstance.save();
-
-      setSnackbar({
-        open: true,
-        message: "Port saved. Changes will take effect on next transfer",
-        severity: "success",
-      });
-    } catch (error) {
-      console.error("Failed to save port:", error);
-      setSnackbar({
-        open: true,
-        message: `Failed to save port: ${error}`,
-        severity: "error",
-      });
+      showSnackbar(`Failed to select folder: ${error}`, "error");
     }
   };
 
   return (
-    <Box sx={{ p: 2, pt: 3 }}>
+    <>
       <Typography variant="h6">Settings</Typography>
 
       <Box sx={{ mb: 3 }}>
@@ -141,34 +84,19 @@ function SettingsPage() {
         <Typography variant="body2" color="text.secondary" gutterBottom>
           Port Configuration
         </Typography>
-        <Box
-          component="form"
-          onSubmit={handleSavePort}
-          sx={{ display: "flex", gap: 1 }}
-        >
-          <TextField
-            name="port"
-            fullWidth
-            placeholder="Port number (1-65535)"
-            value={port}
-            onChange={(e) => setPort(Number(e.target.value))}
-            size="small"
-            type="number"
-            slotProps={{
-              input: {
-                inputProps: { min: 1, max: 65535 },
-              },
-            }}
-          />
-          <IconButton
-            type="submit"
-            color="primary"
-            size="medium"
-            title="Save port"
-          >
-            <SaveIcon />
-          </IconButton>
-        </Box>
+        <TextField
+          fullWidth
+          placeholder="Port number (1-65535)"
+          value={port}
+          onChange={(e) => setPort(Number(e.target.value))}
+          size="small"
+          type="number"
+          slotProps={{
+            input: {
+              inputProps: { min: 1, max: 65535 },
+            },
+          }}
+        />
       </Box>
 
       <Alert severity="info" sx={{ mt: 2 }}>
@@ -187,19 +115,7 @@ function SettingsPage() {
           Flying v{version}
         </Typography>
       </Box>
-
-      <Snackbar
-        open={snackbar.open}
-        autoHideDuration={3000}
-        onClose={() => setSnackbar({ ...snackbar, open: false })}
-        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
-        sx={{ bottom: 72 }}
-      >
-        <Alert severity={snackbar.severity} sx={{ width: "100%" }}>
-          {snackbar.message}
-        </Alert>
-      </Snackbar>
-    </Box>
+    </>
   );
 }
 

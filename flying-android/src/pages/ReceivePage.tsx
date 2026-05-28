@@ -9,8 +9,6 @@ import {
   InputLabel,
   Typography,
   LinearProgress,
-  Snackbar,
-  Alert,
   IconButton,
 } from "@mui/material";
 import {
@@ -23,7 +21,9 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { Store } from "@tauri-apps/plugin-store";
+import { useAtomValue } from "jotai";
+import { portAtom } from "../store";
+import { useSnackbar } from "../hooks";
 
 type ConnectionMode = "listen" | "connect" | "relay_listen" | "relay_dial";
 
@@ -40,11 +40,8 @@ function ReceivePage() {
   const [progress, setProgress] = useState(0);
   const [outputDirUri, setOutputDirUri] = useState<string | null>(null);
   const [outputDirName, setOutputDirName] = useState<string | null>(null);
-  const [snackbar, setSnackbar] = useState({
-    open: false,
-    message: "",
-    severity: "success" as "success" | "error",
-  });
+  const port = useAtomValue(portAtom);
+  const { showSnackbar } = useSnackbar();
 
   useEffect(() => {
     const loadDefaultFolder = async () => {
@@ -68,11 +65,7 @@ function ReceivePage() {
       setIsReceiving(false);
       setStatus("Receive completed!");
       setProgress(100);
-      setSnackbar({
-        open: true,
-        message: "File received successfully",
-        severity: "success",
-      });
+      showSnackbar("File received successfully", "success");
       setTimeout(() => {
         setStatus("");
         setProgress(0);
@@ -83,7 +76,7 @@ function ReceivePage() {
       setIsReceiving(false);
       setStatus("");
       setProgress(0);
-      setSnackbar({ open: true, message: event.payload, severity: "error" });
+      showSnackbar(event.payload, "error");
     });
 
     const unlisten4 = listen<number>("receive-progress", (event) => {
@@ -107,11 +100,7 @@ function ReceivePage() {
   const handleCopyPassword = async () => {
     if (password) {
       await writeText(password);
-      setSnackbar({
-        open: true,
-        message: "Password copied to clipboard",
-        severity: "success",
-      });
+      showSnackbar("Password copied to clipboard", "success");
     }
   };
 
@@ -119,18 +108,10 @@ function ReceivePage() {
     try {
       const generatedPassword = await invoke<string>("generate_password");
       setPassword(generatedPassword);
-      setSnackbar({
-        open: true,
-        message: "Password generated",
-        severity: "success",
-      });
+      showSnackbar("Password generated", "success");
     } catch (error) {
       console.error("Failed to generate password:", error);
-      setSnackbar({
-        open: true,
-        message: "Failed to generate password",
-        severity: "error",
-      });
+      showSnackbar("Failed to generate password", "error");
     }
   };
 
@@ -141,38 +122,22 @@ function ReceivePage() {
         const [uri, _name] = result;
         setOutputDirUri(uri);
         setOutputDirName(uri);
-        setSnackbar({
-          open: true,
-          message: `Output folder set to: ${uri}`,
-          severity: "success",
-        });
+        showSnackbar(`Output folder set to: ${uri}`, "success");
       }
     } catch (error) {
       console.error("Failed to pick folder:", error);
-      setSnackbar({
-        open: true,
-        message: `Failed to pick folder: ${error}`,
-        severity: "error",
-      });
+      showSnackbar(`Failed to pick folder: ${error}`, "error");
     }
   };
 
   const handleReceive = async () => {
     if (!outputDirUri) {
-      setSnackbar({
-        open: true,
-        message: "Please select an output folder first",
-        severity: "error",
-      });
+      showSnackbar("Please select an output folder first", "error");
       return;
     }
 
     if (connectionMode === "connect" && !connectIp.trim()) {
-      setSnackbar({
-        open: true,
-        message: "Please enter target IP address",
-        severity: "error",
-      });
+      showSnackbar("Please enter target IP address", "error");
       return;
     }
 
@@ -180,20 +145,12 @@ function ReceivePage() {
       (connectionMode === "relay_listen" || connectionMode === "relay_dial") &&
       !relayAddr.trim()
     ) {
-      setSnackbar({
-        open: true,
-        message: "Please enter relay address",
-        severity: "error",
-      });
+      showSnackbar("Please enter relay address", "error");
       return;
     }
 
     if (connectionMode === "relay_dial" && !remotePeerId.trim()) {
-      setSnackbar({
-        open: true,
-        message: "Please enter remote peer ID",
-        severity: "error",
-      });
+      showSnackbar("Please enter remote peer ID", "error");
       return;
     }
 
@@ -208,28 +165,17 @@ function ReceivePage() {
         setPassword(receivePassword);
       } catch (error) {
         console.error("Failed to generate password:", error);
-        setSnackbar({
-          open: true,
-          message: "Failed to generate password",
-          severity: "error",
-        });
+        showSnackbar("Failed to generate password", "error");
         return;
       }
     }
 
     if (!receivePassword) {
-      setSnackbar({
-        open: true,
-        message: "Please enter or generate a password",
-        severity: "error",
-      });
+      showSnackbar("Please enter or generate a password", "error");
       return;
     }
 
     try {
-      const store = await Store.load("settings.json");
-      let port = await store.get<number>("port");
-      if (!port) port = 3290;
       await invoke("receive_file", {
         password: receivePassword,
         connectionMode,
@@ -241,11 +187,7 @@ function ReceivePage() {
       });
     } catch (error) {
       console.error("Failed to receive file:", error);
-      setSnackbar({
-        open: true,
-        message: `Failed to receive file: ${error}`,
-        severity: "error",
-      });
+      showSnackbar(`Failed to receive file: ${error}`, "error");
     }
   };
 
@@ -255,23 +197,15 @@ function ReceivePage() {
       setIsReceiving(false);
       setStatus("");
       setProgress(0);
-      setSnackbar({
-        open: true,
-        message: "Transfer cancelled",
-        severity: "success",
-      });
+      showSnackbar("Transfer cancelled", "success");
     } catch (error) {
       console.error("Failed to cancel transfer:", error);
-      setSnackbar({
-        open: true,
-        message: `Failed to cancel: ${error}`,
-        severity: "error",
-      });
+      showSnackbar(`Failed to cancel: ${error}`, "error");
     }
   };
 
   return (
-    <Box sx={{ p: 2, pt: 3 }}>
+    <>
       <Typography variant="h6">Receive File</Typography>
       <Box sx={{ mb: 3 }}>
         <Box sx={{ display: "flex", gap: 1 }}>
@@ -408,18 +342,10 @@ function ReceivePage() {
               onClick={async () => {
                 try {
                   await writeText(peerId);
-                  setSnackbar({
-                    open: true,
-                    message: "Peer ID copied to clipboard",
-                    severity: "success",
-                  });
+                  showSnackbar("Peer ID copied to clipboard", "success");
                 } catch (error) {
                   console.error("Failed to copy peer ID:", error);
-                  setSnackbar({
-                    open: true,
-                    message: "Failed to copy peer ID",
-                    severity: "error",
-                  });
+                  showSnackbar("Failed to copy peer ID", "error");
                 }
               }}
               color="primary"
@@ -464,18 +390,7 @@ function ReceivePage() {
           STOP
         </Button>
       )}
-      <Snackbar
-        open={snackbar.open}
-        autoHideDuration={3000}
-        onClose={() => setSnackbar({ ...snackbar, open: false })}
-        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
-        sx={{ bottom: 72 }}
-      >
-        <Alert severity={snackbar.severity} sx={{ width: "100%" }}>
-          {snackbar.message}
-        </Alert>
-      </Snackbar>
-    </Box>
+    </>
   );
 }
 

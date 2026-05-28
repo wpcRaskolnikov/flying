@@ -9,8 +9,6 @@ import {
   InputLabel,
   Typography,
   LinearProgress,
-  Snackbar,
-  Alert,
   IconButton,
 } from "@mui/material";
 import {
@@ -24,7 +22,9 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { Store } from "@tauri-apps/plugin-store";
+import { useAtomValue } from "jotai";
+import { portAtom } from "../store";
+import { useSnackbar } from "../hooks";
 
 type ConnectionMode = "listen" | "connect" | "relay_listen" | "relay_dial";
 
@@ -41,11 +41,9 @@ function SendPage() {
   const [isSending, setIsSending] = useState(false);
   const [status, setStatus] = useState("");
   const [progress, setProgress] = useState(0);
-  const [snackbar, setSnackbar] = useState({
-    open: false,
-    message: "",
-    severity: "success" as "success" | "error",
-  });
+  const { showSnackbar } = useSnackbar();
+
+  const port = useAtomValue(portAtom);
 
   useEffect(() => {
     const unlisten1 = listen("send-start", () => {
@@ -58,11 +56,7 @@ function SendPage() {
       setIsSending(false);
       setStatus("Send completed!");
       setProgress(100);
-      setSnackbar({
-        open: true,
-        message: "File sent successfully",
-        severity: "success",
-      });
+      showSnackbar("File sent successfully", "success");
       setTimeout(() => {
         setStatus("");
         setProgress(0);
@@ -73,7 +67,7 @@ function SendPage() {
       setIsSending(false);
       setStatus("");
       setProgress(0);
-      setSnackbar({ open: true, message: event.payload, severity: "error" });
+      showSnackbar(event.payload, "error");
     });
 
     const unlisten4 = listen<number>("send-progress", (event) => {
@@ -105,11 +99,7 @@ function SendPage() {
       }
     } catch (error) {
       console.error("Failed to select file:", error);
-      setSnackbar({
-        open: true,
-        message: "Failed to select file",
-        severity: "error",
-      });
+      showSnackbar("Failed to select file", "error");
     }
   };
 
@@ -124,22 +114,14 @@ function SendPage() {
       }
     } catch (error) {
       console.error("Failed to select folder:", error);
-      setSnackbar({
-        open: true,
-        message: "Failed to select folder",
-        severity: "error",
-      });
+      showSnackbar("Failed to select folder", "error");
     }
   };
 
   const handleCopyPassword = async () => {
     if (password) {
       await writeText(password);
-      setSnackbar({
-        open: true,
-        message: "Password copied to clipboard",
-        severity: "success",
-      });
+      showSnackbar("Password copied to clipboard", "success");
     }
   };
 
@@ -147,37 +129,21 @@ function SendPage() {
     try {
       const generatedPassword = await invoke<string>("generate_password");
       setPassword(generatedPassword);
-      setSnackbar({
-        open: true,
-        message: "Password generated",
-        severity: "success",
-      });
+      showSnackbar("Password generated", "success");
     } catch (error) {
       console.error("Failed to generate password:", error);
-      setSnackbar({
-        open: true,
-        message: "Failed to generate password",
-        severity: "error",
-      });
+      showSnackbar("Failed to generate password", "error");
     }
   };
 
   const handleSend = async () => {
     if (!selectedFile) {
-      setSnackbar({
-        open: true,
-        message: "Please select a file",
-        severity: "error",
-      });
+      showSnackbar("Please select a file", "error");
       return;
     }
 
     if (connectionMode === "connect" && !connectIp.trim()) {
-      setSnackbar({
-        open: true,
-        message: "Please enter target IP address",
-        severity: "error",
-      });
+      showSnackbar("Please enter target IP address", "error");
       return;
     }
 
@@ -185,20 +151,12 @@ function SendPage() {
       (connectionMode === "relay_listen" || connectionMode === "relay_dial") &&
       !relayAddr.trim()
     ) {
-      setSnackbar({
-        open: true,
-        message: "Please enter relay address",
-        severity: "error",
-      });
+      showSnackbar("Please enter relay address", "error");
       return;
     }
 
     if (connectionMode === "relay_dial" && !remotePeerId.trim()) {
-      setSnackbar({
-        open: true,
-        message: "Please enter remote peer ID",
-        severity: "error",
-      });
+      showSnackbar("Please enter remote peer ID", "error");
       return;
     }
 
@@ -214,28 +172,17 @@ function SendPage() {
         setPassword(sendPassword);
       } catch (error) {
         console.error("Failed to generate password:", error);
-        setSnackbar({
-          open: true,
-          message: "Failed to generate password",
-          severity: "error",
-        });
+        showSnackbar("Failed to generate password", "error");
         return;
       }
     }
 
     if (!sendPassword) {
-      setSnackbar({
-        open: true,
-        message: "Please enter or generate a password",
-        severity: "error",
-      });
+      showSnackbar("Please enter or generate a password", "error");
       return;
     }
 
     try {
-      const store = await Store.load("settings.json");
-      let port = await store.get<number>("port");
-      if (!port) port = 3290;
       await invoke("send_file", {
         fileUri: selectedFile,
         password: sendPassword,
@@ -247,11 +194,7 @@ function SendPage() {
       });
     } catch (error) {
       console.error("Failed to send file:", error);
-      setSnackbar({
-        open: true,
-        message: `Failed to send file: ${error}`,
-        severity: "error",
-      });
+      showSnackbar(`Failed to send file: ${error}`, "error");
     }
   };
 
@@ -261,23 +204,15 @@ function SendPage() {
       setIsSending(false);
       setStatus("");
       setProgress(0);
-      setSnackbar({
-        open: true,
-        message: "Transfer cancelled",
-        severity: "success",
-      });
+      showSnackbar("Transfer cancelled", "success");
     } catch (error) {
       console.error("Failed to cancel transfer:", error);
-      setSnackbar({
-        open: true,
-        message: `Failed to cancel: ${error}`,
-        severity: "error",
-      });
+      showSnackbar(`Failed to cancel: ${error}`, "error");
     }
   };
 
   return (
-    <Box sx={{ p: 2, pt: 3 }}>
+    <>
       <Typography variant="h6">Send File</Typography>
       <Box sx={{ mb: 3 }}>
         <Box sx={{ display: "flex", gap: 1 }}>
@@ -423,18 +358,10 @@ function SendPage() {
               onClick={async () => {
                 try {
                   await writeText(peerId);
-                  setSnackbar({
-                    open: true,
-                    message: "Peer ID copied to clipboard",
-                    severity: "success",
-                  });
+                  showSnackbar("Peer ID copied to clipboard", "success");
                 } catch (error) {
                   console.error("Failed to copy peer ID:", error);
-                  setSnackbar({
-                    open: true,
-                    message: "Failed to copy peer ID",
-                    severity: "error",
-                  });
+                  showSnackbar("Failed to copy peer ID", "error");
                 }
               }}
               color="primary"
@@ -479,19 +406,7 @@ function SendPage() {
           STOP
         </Button>
       )}
-
-      <Snackbar
-        open={snackbar.open}
-        autoHideDuration={3000}
-        onClose={() => setSnackbar({ ...snackbar, open: false })}
-        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
-        sx={{ bottom: 72 }}
-      >
-        <Alert severity={snackbar.severity} sx={{ width: "100%" }}>
-          {snackbar.message}
-        </Alert>
-      </Snackbar>
-    </Box>
+    </>
   );
 }
 

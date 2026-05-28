@@ -22,6 +22,7 @@ import {
   SettingsPage,
   CollabEditPage,
 } from "./pages";
+import { SnackbarProvider } from "./hooks";
 
 const tabs = [
   { label: "Discover", icon: <SearchIcon />, component: <DiscoverPage /> },
@@ -55,22 +56,22 @@ function App() {
         }}
       >
         {/* Main content area */}
-        <Box
-          sx={{
-            flexGrow: 1,
-            overflow: "auto",
-            pb: 7,
-            pt: "env(safe-area-inset-top)",
-            pl: "env(safe-area-inset-left)",
-            pr: "env(safe-area-inset-right)",
-          }}
-        >
-          {tabs.map((tab, index) => (
-            <Box key={index} hidden={currentTab !== index}>
-              {tab.component}
-            </Box>
-          ))}
-        </Box>
+        <SnackbarProvider>
+          <Box
+            sx={{
+              flexGrow: 1,
+              overflow: "auto",
+              p: 3,
+              pb: 7,
+            }}
+          >
+            {tabs.map((tab, index) => (
+              <Box key={index} hidden={currentTab !== index}>
+                {tab.component}
+              </Box>
+            ))}
+          </Box>
+        </SnackbarProvider>
 
         {/* Bottom Navigation */}
         <Paper

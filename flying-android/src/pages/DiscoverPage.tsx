@@ -9,7 +9,6 @@ import {
   Typography,
   CircularProgress,
   Alert,
-  Snackbar,
 } from "@mui/material";
 import {
   Refresh as RefreshIcon,
@@ -19,6 +18,7 @@ import {
 } from "@mui/icons-material";
 import { invoke } from "@tauri-apps/api/core";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
+import { useSnackbar } from "../hooks";
 
 interface DiscoveredHost {
   name: string;
@@ -30,7 +30,7 @@ interface DiscoveredHost {
 function DiscoverPage() {
   const [hosts, setHosts] = useState<DiscoveredHost[]>([]);
   const [isDiscovering, setIsDiscovering] = useState(false);
-  const [snackbar, setSnackbar] = useState({ open: false, message: "" });
+  const { showSnackbar } = useSnackbar();
 
   const handleDiscover = async () => {
     setIsDiscovering(true);
@@ -46,16 +46,13 @@ function DiscoverPage() {
       setHosts(allHosts);
 
       if (allHosts.length === 0) {
-        setSnackbar({ open: true, message: "No hosts found" });
+        showSnackbar("No hosts found");
       } else {
-        setSnackbar({
-          open: true,
-          message: `Found ${allHosts.length} host(s)`,
-        });
+        showSnackbar(`Found ${allHosts.length} host(s)`);
       }
     } catch (error) {
       console.error("Failed to discover hosts:", error);
-      setSnackbar({ open: true, message: `Discovery failed: ${error}` });
+      showSnackbar(`Discovery failed: ${error}`, "error");
     } finally {
       setIsDiscovering(false);
     }
@@ -66,13 +63,13 @@ function DiscoverPage() {
     const text =
       host.service_type === "collab" ? `${ipPart}:${host.port}` : host.ip;
     await writeText(text);
-    setSnackbar({ open: true, message: `Copied ${text}` });
+    showSnackbar(`Copied ${text}`);
   };
 
   const isIpv6 = (ip: string) => ip.includes(":");
 
   return (
-    <Box sx={{ p: 2, pt: 3 }}>
+    <>
       <Box
         sx={{
           display: "flex",
@@ -150,16 +147,7 @@ function DiscoverPage() {
           ))}
         </List>
       )}
-
-      <Snackbar
-        open={snackbar.open}
-        autoHideDuration={2000}
-        onClose={() => setSnackbar({ ...snackbar, open: false })}
-        message={snackbar.message}
-        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
-        sx={{ bottom: 72 }}
-      />
-    </Box>
+    </>
   );
 }
 

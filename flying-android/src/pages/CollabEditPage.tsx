@@ -11,13 +11,12 @@ import {
   ListItemAvatar,
   ListItemText,
   IconButton,
-  Snackbar,
-  Alert,
   Select,
   Switch,
   MenuItem,
   InputLabel,
   FormControl,
+  Alert,
 } from "@mui/material";
 import {
   Group as GroupIcon,
@@ -31,6 +30,7 @@ import * as Y from "yjs";
 import { WebsocketProvider } from "y-websocket";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { invoke } from "@tauri-apps/api/core";
+import { useSnackbar } from "../hooks";
 
 interface Peer {
   id: number;
@@ -69,11 +69,7 @@ function CollabEditPage() {
   const [peers, setPeers] = useState<Peer[]>([]);
   const [inRoom, setInRoom] = useState(false);
   const [connected, setConnected] = useState(false);
-  const [snackbar, setSnackbar] = useState({
-    open: false,
-    message: "",
-    severity: "success" as "success" | "error" | "info",
-  });
+  const { showSnackbar } = useSnackbar();
 
   // Local server state
   const [localServerOn, setLocalServerOn] = useState(false);
@@ -147,7 +143,7 @@ function CollabEditPage() {
 
   const notify = useCallback(
     (message: string, severity: "success" | "error" | "info" = "info") => {
-      setSnackbar({ open: true, message, severity });
+      showSnackbar(message, severity);
     },
     [],
   );
@@ -284,7 +280,7 @@ function CollabEditPage() {
   // --- Join screen ---
   if (!inRoom) {
     return (
-      <Box sx={{ p: 2, pt: 3 }}>
+      <>
         <Typography variant="h6" sx={{ mb: 3 }}>
           Collaborative Editor
         </Typography>
@@ -375,19 +371,7 @@ function CollabEditPage() {
             JOIN ROOM
           </Button>
         </Box>
-
-        <Snackbar
-          open={snackbar.open}
-          autoHideDuration={3000}
-          onClose={() => setSnackbar((prev) => ({ ...prev, open: false }))}
-          anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
-          sx={{ bottom: 72 }}
-        >
-          <Alert severity={snackbar.severity} sx={{ width: "100%" }}>
-            {snackbar.message}
-          </Alert>
-        </Snackbar>
-      </Box>
+      </>
     );
   }
 
@@ -493,18 +477,6 @@ function CollabEditPage() {
           basicSetup
         />
       </Box>
-
-      <Snackbar
-        open={snackbar.open}
-        autoHideDuration={3000}
-        onClose={() => setSnackbar((prev) => ({ ...prev, open: false }))}
-        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
-        sx={{ bottom: 72 }}
-      >
-        <Alert severity={snackbar.severity} sx={{ width: "100%" }}>
-          {snackbar.message}
-        </Alert>
-      </Snackbar>
     </Box>
   );
 }

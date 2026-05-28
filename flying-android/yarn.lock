@@ -1754,6 +1754,7 @@ __metadata:
     "@uiw/react-codemirror": "npm:^4.25.9"
     "@vitejs/plugin-react": "npm:^4.6.0"
     "@y/websocket-server": "npm:^0.1.5"
+    jotai: "npm:^2.20.0"
     react: "npm:^19.1.0"
     react-dom: "npm:^19.1.0"
     typescript: "npm:~5.8.3"
@@ -1859,6 +1860,27 @@ __metadata:
   version: 0.2.5
   resolution: "isomorphic.js@npm:0.2.5"
   checksum: 10c0/7cd268c8e58146a8160c8cd16596291fd1fbf3e8799a325f269accda9dc1238806e371ccef0b66fe2ad957209230c55997248d8b6d02cf2d7c575ffeb759c789
+  languageName: node
+  linkType: hard
+
+"jotai@npm:^2.20.0":
+  version: 2.20.0
+  resolution: "jotai@npm:2.20.0"
+  peerDependencies:
+    "@babel/core": ">=7.0.0"
+    "@babel/template": ">=7.0.0"
+    "@types/react": ">=17.0.0"
+    react: ">=17.0.0"
+  peerDependenciesMeta:
+    "@babel/core":
+      optional: true
+    "@babel/template":
+      optional: true
+    "@types/react":
+      optional: true
+    react:
+      optional: true
+  checksum: 10c0/e16c88dc8792826b9f148faf0fa5547e9948bf7f2b9e7b968cae89448024b40cde3a2cffa0df89fef223a7bc79bed72844f525c7cb86bd37741d44aede5e4fc1
   languageName: node
   linkType: hard
 
