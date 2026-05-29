@@ -176,6 +176,7 @@ function ReceivePage() {
     }
 
     try {
+      setIsReceiving(true);
       await invoke("receive_file", {
         password: receivePassword,
         config,

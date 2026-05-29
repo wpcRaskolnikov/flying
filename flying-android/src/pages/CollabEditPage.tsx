@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import {
   Box,
   Button,
+  Stack,
   TextField,
   Typography,
   Chip,
@@ -38,11 +39,10 @@ interface Peer {
   name: string;
 }
 
-interface ServerStatus {
-  running: boolean;
-  port: number;
-  room_count: number;
-}
+type ServerState =
+  | { status: "idle" }
+  | { status: "starting" }
+  | { status: "running" };
 
 const USER_COLORS = [
   { color: "#e57373", light: "#e5737333" },
@@ -72,13 +72,7 @@ function CollabEditPage() {
   const { showSnackbar } = useSnackbar();
 
   // Local server state
-  const [localServerOn, setLocalServerOn] = useState(false);
-  const [localServerStatus, setLocalServerStatus] = useState<ServerStatus>({
-    running: false,
-    port: 0,
-    room_count: 0,
-  });
-  const [serverStarting, setServerStarting] = useState(false);
+  const [serverState, setServerState] = useState<ServerState>({ status: "idle" });
 
   const ydocRef = useRef<Y.Doc | null>(null);
   const providerRef = useRef<WebsocketProvider | null>(null);
@@ -97,10 +91,9 @@ function CollabEditPage() {
     let isMounted = true;
     const checkStatus = async () => {
       try {
-        const status = await invoke<ServerStatus>("get_collab_server_status");
+        const s = await invoke<ServerState>("get_collab_server_status");
         if (isMounted) {
-          setLocalServerStatus(status);
-          setLocalServerOn(status.running);
+          setServerState(s);
         }
       } catch {
         // ignore
@@ -115,28 +108,27 @@ function CollabEditPage() {
   }, []);
 
   const handleToggleServer = async () => {
-    if (localServerOn) {
+    if (serverState.status === "running") {
       try {
         await invoke("stop_collab_server");
-        setLocalServerOn(false);
+        setServerState({ status: "idle" });
         notify("Local server stopped", "info");
       } catch (e: any) {
         notify(`Failed to stop server: ${e}`, "error");
       }
     } else {
-      setServerStarting(true);
+      setServerState({ status: "starting" });
       try {
         const result = await invoke("start_collab_server", {
           port: DEFAULT_PORT,
         });
-        setLocalServerOn(true);
+        setServerState({ status: "running" });
         setServerAddr(`127.0.0.1:${DEFAULT_PORT}`);
         setUseWss(false);
         notify(result as string, "success");
       } catch (e: any) {
         notify(`Failed to start server: ${e}`, "error");
-      } finally {
-        setServerStarting(false);
+        setServerState({ status: "idle" });
       }
     }
   };
@@ -280,44 +272,39 @@ function CollabEditPage() {
   // --- Join screen ---
   if (!inRoom) {
     return (
-      <>
-        <Typography variant="h6" sx={{ mb: 3 }}>
-          Collaborative Editor
-        </Typography>
-        <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
+      <Stack spacing={2} sx={{ width: "100%" }}>
+        <Typography variant="h6">Collaborative Editor</Typography>
+        <Typography variant="body2" color="text.secondary">
           Enter a server address and room to start editing together.
         </Typography>
 
         {/* Local server toggle */}
-        <Box sx={{ mb: 2 }}>
-          <Box
-            sx={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              mb: 1,
-            }}
-          >
-            <Typography variant="body2" color="text.secondary">
-              Local Collaboration Server
-            </Typography>
-            {serverStarting ? (
-              <Chip size="small" label="Starting..." color="warning" />
-            ) : (
-              <Switch
-                checked={localServerOn}
-                onChange={handleToggleServer}
-                color="success"
-                size="small"
-              />
-            )}
-          </Box>
-          {localServerOn && (
-            <Alert severity="success" sx={{ mb: 2 }}>
-              Server running on ws://0.0.0.0:{localServerStatus.port}
-            </Alert>
+        <Box
+          sx={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+          }}
+        >
+          <Typography variant="body2" color="text.secondary">
+            Local Collaboration Server
+          </Typography>
+          {serverState.status === "starting" ? (
+            <Chip size="small" label="Starting..." color="warning" />
+          ) : (
+            <Switch
+              checked={serverState.status === "running"}
+              onChange={handleToggleServer}
+              color="success"
+              size="small"
+            />
           )}
         </Box>
+        {serverState.status === "running" && (
+          <Alert severity="success">
+            Server running on ws://0.0.0.0:{DEFAULT_PORT}
+          </Alert>
+        )}
 
         <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
           <Box sx={{ display: "flex", gap: 1, alignItems: "center" }}>
@@ -371,13 +358,13 @@ function CollabEditPage() {
             JOIN ROOM
           </Button>
         </Box>
-      </>
+      </Stack>
     );
   }
 
   // --- editor screen ---
   return (
-    <Box
+    <Stack
       sx={{
         display: "flex",
         flexDirection: "column",
@@ -477,7 +464,7 @@ function CollabEditPage() {
           basicSetup
         />
       </Box>
-    </Box>
+    </Stack>
   );
 }
 

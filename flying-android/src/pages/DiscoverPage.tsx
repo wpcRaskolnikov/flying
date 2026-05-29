@@ -2,6 +2,7 @@ import { useState } from "react";
 import {
   Box,
   Button,
+  Stack,
   List,
   ListItem,
   ListItemText,
@@ -24,7 +25,7 @@ interface DiscoveredHost {
   name: string;
   ip: string;
   port: number;
-  service_type: string;
+  serviceType: string;
 }
 
 function DiscoverPage() {
@@ -61,7 +62,7 @@ function DiscoverPage() {
   const handleCopyIp = async (host: DiscoveredHost) => {
     const ipPart = isIpv6(host.ip) ? `[${host.ip}]` : host.ip;
     const text =
-      host.service_type === "collab" ? `${ipPart}:${host.port}` : host.ip;
+      host.serviceType === "collab" ? `${ipPart}:${host.port}` : host.ip;
     await writeText(text);
     showSnackbar(`Copied ${text}`);
   };
@@ -69,13 +70,12 @@ function DiscoverPage() {
   const isIpv6 = (ip: string) => ip.includes(":");
 
   return (
-    <>
+    <Stack spacing={2}>
       <Box
         sx={{
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
-          mb: 3,
         }}
       >
         <Typography variant="h6">Discover Hosts</Typography>
@@ -96,19 +96,18 @@ function DiscoverPage() {
       </Box>
 
       {hosts.length === 0 && !isDiscovering && (
-        <Alert severity="info" sx={{ mb: 2 }}>
+        <Alert severity="info">
           Click "Discover" to find hosts on your local network
         </Alert>
       )}
 
       {hosts.length > 0 && (
-        <List>
+        <List sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
           {hosts.map((host, index) => (
             <ListItem
               key={index}
               sx={{
                 bgcolor: "background.paper",
-                mb: 1,
                 borderRadius: 1,
                 border: "1px solid",
                 borderColor: "divider",
@@ -127,7 +126,7 @@ function DiscoverPage() {
                 primary={
                   <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
                     {host.name || "Unknown Host"}
-                    {host.service_type === "collab" ? (
+                    {host.serviceType === "collab" ? (
                       <EditIcon fontSize="small" color="primary" />
                     ) : (
                       <FolderIcon fontSize="small" color="primary" />
@@ -135,7 +134,7 @@ function DiscoverPage() {
                   </Box>
                 }
                 secondary={
-                  host.service_type === "collab"
+                  host.serviceType === "collab"
                     ? `${isIpv6(host.ip) ? `[${host.ip}]` : host.ip}:${host.port}`
                     : host.ip
                 }
@@ -147,7 +146,7 @@ function DiscoverPage() {
           ))}
         </List>
       )}
-    </>
+    </Stack>
   );
 }
 

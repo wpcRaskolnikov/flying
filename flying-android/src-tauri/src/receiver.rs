@@ -1,5 +1,5 @@
-use crate::sender::ConnectionMode;
-use crate::utils::TransferState;
+use crate::sender::ConnectionConfig;
+use crate::utils::{TransferState, TransferStatusPayload};
 use std::sync::Arc;
 
 use flying::mdns::ServiceDaemon;
@@ -26,16 +26,13 @@ pub async fn cancel_receive(state: tauri::State<'_, TransferState>) -> Result<()
 #[tauri::command]
 pub async fn receive_file(
     password: String,
-    connection_mode: ConnectionMode,
-    connect_ip: Option<String>,
-    relay_addr: Option<String>,
-    remote_peer_id: Option<String>,
-    _output_dir_uri: String,
+    config: ConnectionConfig,
+    output_dir_uri: String,
     port: u16,
     window: tauri::Window,
     state: tauri::State<'_, TransferState>,
 ) -> Result<(), String> {
-    let mode = connection_mode.to_flying_mode(connect_ip, relay_addr, remote_peer_id)?;
+    let mode = config.to_flying_mode()?;
 
     let (abort_handle, abort_registration) = oneshot::channel::<()>();
     let (mdns_tx, mdns_rx) = oneshot::channel::<ServiceDaemon>();
@@ -49,29 +46,31 @@ pub async fn receive_file(
     });
 
     tokio::spawn(async move {
-        let _ = window.emit("receive-start", serde_json::json!({}));
         let output_dir;
 
         #[cfg(target_os = "android")]
         {
-            // use tauri_plugin_android_fs::{AndroidFsExt, FileUri};
-            // let api = app.android_fs_async();
-
-            // let output_uri = FileUri::from_json_str(&output_dir_uri)
-            //     .map_err(|e| format!("Failed to parse output directory URI: {}", e))?;
             output_dir = PathBuf::from("/storage/emulated/0/Download");
         }
 
         #[cfg(not(target_os = "android"))]
         {
-            output_dir = PathBuf::from(_output_dir_uri);
+            output_dir = PathBuf::from(output_dir_uri);
         }
 
         let (progress_tx, mut progress_rx) = mpsc::channel(32);
         let window_clone = window.clone();
         tokio::spawn(async move {
             while let Some(percent) = progress_rx.recv().await {
-                let _ = window_clone.emit("receive-progress", percent);
+                let _ = window_clone.emit(
+                    "receive-status-update",
+                    TransferStatusPayload {
+                        status: "Sending".to_string(),
+                        progress: percent,
+                        message: None,
+                        peer_id: None,
+                    },
+                );
             }
         });
 
@@ -80,9 +79,43 @@ pub async fn receive_file(
         let window_peer_id = window.clone();
         tokio::spawn(async move {
             if let Some(peer_id) = peer_id_rx.recv().await {
-                let _ = window_peer_id.emit("receive-ready", peer_id);
+                let _ = window_peer_id.emit(
+                    "receive-status-update",
+                    TransferStatusPayload {
+                        status: "Ready".to_string(),
+                        progress: 0,
+                        message: None,
+                        peer_id: Some(peer_id),
+                    },
+                );
             }
         });
+
+        // Emit initial status: Ready for listen modes, Sending for others
+        match &mode {
+            flying::ConnectionMode::Listen => {
+                let _ = window.emit(
+                    "receive-status-update",
+                    TransferStatusPayload {
+                        status: "Ready".to_string(),
+                        progress: 0,
+                        message: None,
+                        peer_id: None,
+                    },
+                );
+            }
+            _ => {
+                let _ = window.emit(
+                    "receive-status-update",
+                    TransferStatusPayload {
+                        status: "Sending".to_string(),
+                        progress: 0,
+                        message: None,
+                        peer_id: None,
+                    },
+                );
+            }
+        }
 
         // Check for cancellation or run transfer
         let result = tokio::select! {
@@ -96,10 +129,26 @@ pub async fn receive_file(
 
         match result {
             Ok(_) => {
-                let _ = window.emit("receive-complete", serde_json::json!({}));
+                let _ = window.emit(
+                    "receive-status-update",
+                    TransferStatusPayload {
+                        status: "Completed".to_string(),
+                        progress: 100,
+                        message: None,
+                        peer_id: None,
+                    },
+                );
             }
             Err(e) => {
-                let _ = window.emit("receive-error", e);
+                let _ = window.emit(
+                    "receive-status-update",
+                    TransferStatusPayload {
+                        status: "Error".to_string(),
+                        progress: 0,
+                        message: Some(e),
+                        peer_id: None,
+                    },
+                );
             }
         }
     });

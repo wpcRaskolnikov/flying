@@ -1,4 +1,4 @@
-use crate::utils::TransferState;
+use crate::utils::{TransferState, TransferStatusPayload};
 use std::sync::Arc;
 
 use flying::mdns::ServiceDaemon;
@@ -17,42 +17,32 @@ use {
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ConnectionMode {
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum ConnectionConfig {
     Listen,
-    Connect,
-    RelayListen,
-    RelayDial,
+    Connect { connect_ip: String },
+    RelayListen { relay_addr: String, peer_id: String },
+    RelayDial { relay_addr: String, remote_peer_id: String },
 }
 
-impl ConnectionMode {
-    pub fn to_flying_mode(
-        &self,
-        connect_ip: Option<String>,
-        relay_addr: Option<String>,
-        remote_peer_id: Option<String>,
-    ) -> Result<flying::ConnectionMode, String> {
+impl ConnectionConfig {
+    pub fn to_flying_mode(&self) -> Result<flying::ConnectionMode, String> {
         match self {
-            ConnectionMode::Listen => Ok(flying::ConnectionMode::Listen),
-            ConnectionMode::Connect => Ok(flying::ConnectionMode::Connect(
-                connect_ip.unwrap_or_default(),
-            )),
-            ConnectionMode::RelayListen => {
-                let addr = relay_addr.ok_or("Relay address required")?;
-                let multiaddr = addr
-                    .parse()
-                    .map_err(|e| format!("Invalid multiaddr: {}", e))?;
-                Ok(flying::ConnectionMode::RelayListen {
-                    relay_addr: multiaddr,
-                })
+            ConnectionConfig::Listen => Ok(flying::ConnectionMode::Listen),
+            ConnectionConfig::Connect { connect_ip } => {
+                Ok(flying::ConnectionMode::Connect(connect_ip.clone()))
             }
-            ConnectionMode::RelayDial => {
-                let addr = relay_addr.ok_or("Relay address required")?;
-                let peer = remote_peer_id.ok_or("Remote peer ID required")?;
-                let multiaddr = addr
+            ConnectionConfig::RelayListen { relay_addr, .. } => {
+                let multiaddr = relay_addr
                     .parse()
                     .map_err(|e| format!("Invalid multiaddr: {}", e))?;
-                let peer_id = peer
+                Ok(flying::ConnectionMode::RelayListen { relay_addr: multiaddr })
+            }
+            ConnectionConfig::RelayDial { relay_addr, remote_peer_id } => {
+                let multiaddr = relay_addr
+                    .parse()
+                    .map_err(|e| format!("Invalid multiaddr: {}", e))?;
+                let peer_id = remote_peer_id
                     .parse()
                     .map_err(|e| format!("Invalid peer ID: {}", e))?;
                 Ok(flying::ConnectionMode::RelayDial {
@@ -81,19 +71,17 @@ pub async fn cancel_send(state: tauri::State<'_, TransferState>) -> Result<(), S
 pub async fn send_file(
     file_uri: String,
     password: String,
-    connection_mode: ConnectionMode,
-    connect_ip: Option<String>,
-    relay_addr: Option<String>,
-    remote_peer_id: Option<String>,
+    config: ConnectionConfig,
     port: u16,
     _app: tauri::AppHandle,
     window: tauri::Window,
     state: tauri::State<'_, TransferState>,
 ) -> Result<(), String> {
-    let mode = connection_mode.to_flying_mode(connect_ip, relay_addr, remote_peer_id)?;
+    let mode = config.to_flying_mode()?;
 
     let (abort_handle, abort_registration) = oneshot::channel::<()>();
     let (mdns_tx, mdns_rx) = oneshot::channel::<ServiceDaemon>();
+    let (peer_id_tx, mut peer_id_rx) = mpsc::channel(1);
 
     let mdns_daemon_mutex = Arc::clone(&state.mdns_daemon);
     tokio::spawn(async move {
@@ -104,16 +92,55 @@ pub async fn send_file(
     });
 
     tokio::spawn(async move {
-        let _ = window.emit("send-start", serde_json::json!({}));
-
-        // Create peer ID channel for receiving peer ID
-        let (peer_id_tx, mut peer_id_rx) = mpsc::channel(1);
-        let window_peer_id = window.clone();
-        tokio::spawn(async move {
-            if let Some(peer_id) = peer_id_rx.recv().await {
-                let _ = window_peer_id.emit("send-ready", peer_id);
+        // Emit initial status and wait for connection if needed
+        match &mode {
+            flying::ConnectionMode::Listen => {
+                // Emit Ready (waiting for peer to connect)
+                let _ = window.emit(
+                    "send-status-update",
+                    TransferStatusPayload {
+                        status: "Ready".to_string(),
+                        progress: 0,
+                        message: None,
+                        peer_id: None,
+                    },
+                );
             }
-        });
+            flying::ConnectionMode::RelayListen { .. }
+            | flying::ConnectionMode::RelayDial { .. } => {
+                if let Some(peer_id) = peer_id_rx.recv().await {
+                    let _ = window.emit(
+                        "send-status-update",
+                        TransferStatusPayload {
+                            status: "Ready".to_string(),
+                            progress: 0,
+                            message: None,
+                            peer_id: Some(peer_id),
+                        },
+                    );
+                }
+                let _ = window.emit(
+                    "send-status-update",
+                    TransferStatusPayload {
+                        status: "Sending".to_string(),
+                        progress: 0,
+                        message: None,
+                        peer_id: None,
+                    },
+                );
+            }
+            _ => {
+                let _ = window.emit(
+                    "send-status-update",
+                    TransferStatusPayload {
+                        status: "Sending".to_string(),
+                        progress: 0,
+                        message: None,
+                        peer_id: None,
+                    },
+                );
+            }
+        }
 
         #[cfg(target_os = "android")]
         let result: Result<(), String> = async {
@@ -125,7 +152,15 @@ pub async fn send_file(
 
             tokio::spawn(async move {
                 while let Some(percent) = progress_rx.recv().await {
-                    let _ = window_clone.emit("send-progress", percent);
+                    let _ = window_clone.emit(
+                        "send-status-update",
+                        TransferStatusPayload {
+                            status: "Sending".to_string(),
+                            progress: percent,
+                            message: None,
+                            peer_id: None,
+                        },
+                    );
                 }
             });
 
@@ -158,7 +193,15 @@ pub async fn send_file(
 
             tokio::spawn(async move {
                 while let Some(percent) = progress_rx.recv().await {
-                    let _ = window_clone.emit("send-progress", percent);
+                    let _ = window_clone.emit(
+                        "send-status-update",
+                        TransferStatusPayload {
+                            status: "Sending".to_string(),
+                            progress: percent,
+                            message: None,
+                            peer_id: None,
+                        },
+                    );
                 }
             });
 
@@ -175,10 +218,26 @@ pub async fn send_file(
 
         match result {
             Ok(_) => {
-                let _ = window.emit("send-complete", serde_json::json!({}));
+                let _ = window.emit(
+                    "send-status-update",
+                    TransferStatusPayload {
+                        status: "Completed".to_string(),
+                        progress: 100,
+                        message: None,
+                        peer_id: None,
+                    },
+                );
             }
             Err(e) => {
-                let _ = window.emit("send-error", e);
+                let _ = window.emit(
+                    "send-status-update",
+                    TransferStatusPayload {
+                        status: "Error".to_string(),
+                        progress: 0,
+                        message: Some(e),
+                        peer_id: None,
+                    },
+                );
             }
         }
     });

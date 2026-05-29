@@ -1,4 +1,5 @@
 use flying::mdns::ServiceDaemon;
+use serde::Serialize;
 
 #[cfg(not(target_os = "android"))]
 use tauri::Manager;
@@ -29,6 +30,15 @@ use yrs::{Doc, Subscription, Update};
 
 const ROOM_BUFFER: usize = 64;
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransferStatusPayload {
+    pub status: String,
+    pub progress: u8,
+    pub message: Option<String>,
+    pub peer_id: Option<String>,
+}
+
 pub struct RoomManager {
     room_map: StdMutex<HashMap<String, Arc<Room>>>,
     next_client_id: AtomicU64,
@@ -54,10 +64,6 @@ impl RoomManager {
         let room = Arc::new(Room::new(doc, ROOM_BUFFER));
         room_map.insert(name.to_string(), Arc::clone(&room));
         room
-    }
-
-    pub fn room_count(&self) -> usize {
-        self.room_map.lock().unwrap().len()
     }
 }
 

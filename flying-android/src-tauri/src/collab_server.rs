@@ -121,9 +121,7 @@ pub async fn get_collab_server_status(
     state: tauri::State<'_, CollabServerState>,
 ) -> Result<serde_json::Value, String> {
     let is_running = state.abort_handle.lock().unwrap().is_some();
-    let room_count = state.room_manager.room_count();
     Ok(serde_json::json!({
-        "running": is_running,
-        "room_count": room_count
+        "status": if is_running { "running" } else { "idle" }
     }))
 }
