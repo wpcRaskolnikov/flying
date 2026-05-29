@@ -1,7 +1,8 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   Box,
   Button,
+  Stack,
   TextField,
   Select,
   MenuItem,
@@ -16,7 +17,7 @@ import {
   Send as SendIcon,
   ContentCopy as CopyIcon,
   Folder as FolderIcon,
-  Refresh as RefreshIcon,
+  Autorenew as AutorenewIcon,
   Stop as StopIcon,
 } from "@mui/icons-material";
 import { invoke } from "@tauri-apps/api/core";
@@ -26,72 +27,107 @@ import { useAtomValue } from "jotai";
 import { portAtom } from "../store";
 import { useSnackbar } from "../hooks";
 
-type ConnectionMode = "listen" | "connect" | "relay_listen" | "relay_dial";
+type TransferStatusPayload = {
+  status: "Ready" | "Sending" | "Completed" | "Error";
+  progress: number;
+  message?: string;
+  peerId?: string;
+};
+
+type ConnectConfig = {
+  mode: "connect";
+  connectIp: string;
+};
+
+type ListenConfig = {
+  mode: "listen";
+};
+
+type RelayListenConfig = {
+  mode: "relay_listen";
+  relayAddr: string;
+  peerId: string;
+};
+
+type RelayDialConfig = {
+  mode: "relay_dial";
+  relayAddr: string;
+  remotePeerId: string;
+};
+
+type ConnectionConfig =
+  | ConnectConfig
+  | ListenConfig
+  | RelayListenConfig
+  | RelayDialConfig;
 
 function SendPage() {
   const [selectedFile, setSelectedFile] = useState<string>("");
   const [selectedFileName, setSelectedFileName] = useState<string>("");
   const [password, setPassword] = useState("");
-  const [connectionMode, setConnectionMode] =
-    useState<ConnectionMode>("connect");
-  const [connectIp, setConnectIp] = useState("");
-  const [relayAddr, setRelayAddr] = useState("");
-  const [remotePeerId, setRemotePeerId] = useState("");
-  const [peerId, setPeerId] = useState("");
+  const [config, setConfig] = useState<ConnectionConfig>({
+    mode: "connect",
+    connectIp: "",
+  });
   const [isSending, setIsSending] = useState(false);
   const [status, setStatus] = useState("");
   const [progress, setProgress] = useState(0);
-  const { showSnackbar } = useSnackbar();
 
+  const { showSnackbar } = useSnackbar();
   const port = useAtomValue(portAtom);
 
+  const configModeRef = useRef(config.mode);
+  configModeRef.current = config.mode;
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   useEffect(() => {
-    const unlisten1 = listen("send-start", () => {
-      setIsSending(true);
-      setStatus("Sending file...");
-      setProgress(0);
-    });
+    const unlisten = listen<TransferStatusPayload>(
+      "send-status-update",
+      (event) => {
+        const { status, progress, message, peerId } = event.payload;
 
-    const unlisten2 = listen("send-complete", () => {
-      setIsSending(false);
-      setStatus("Send completed!");
-      setProgress(100);
-      showSnackbar("File sent successfully", "success");
-      setTimeout(() => {
-        setStatus("");
-        setProgress(0);
-      }, 2000);
-    });
-
-    const unlisten3 = listen<string>("send-error", (event) => {
-      setIsSending(false);
-      setStatus("");
-      setProgress(0);
-      showSnackbar(event.payload, "error");
-    });
-
-    const unlisten4 = listen<number>("send-progress", (event) => {
-      setProgress(event.payload);
-      setStatus(`Sending file... ${event.payload}%`);
-    });
-
-    const unlisten5 = listen<string>("send-ready", (event) => {
-      setPeerId(event.payload);
-    });
+        switch (status) {
+          case "Ready":
+            if (peerId && configModeRef.current === "relay_listen") {
+              setConfig((prev) => ({ ...prev, peerId }));
+            }
+            setStatus("Waiting for connection...");
+            break;
+          case "Sending":
+            setIsSending(true);
+            setProgress(progress);
+            setStatus(`Sending file... ${progress}%`);
+            break;
+          case "Completed":
+            setIsSending(false);
+            setStatus("Send completed!");
+            setProgress(100);
+            showSnackbar("File sent successfully", "success");
+            if (timerRef.current) clearTimeout(timerRef.current);
+            timerRef.current = setTimeout(() => {
+              setStatus("");
+              setProgress(0);
+            }, 2000);
+            break;
+          case "Error":
+            setIsSending(false);
+            setStatus("");
+            setProgress(0);
+            showSnackbar(message || "An error occurred", "error");
+            break;
+        }
+      },
+    );
 
     return () => {
-      unlisten1.then((fn) => fn());
-      unlisten2.then((fn) => fn());
-      unlisten3.then((fn) => fn());
-      unlisten4.then((fn) => fn());
-      unlisten5.then((fn) => fn());
+      unlisten.then((fn) => fn());
+      if (timerRef.current) clearTimeout(timerRef.current);
     };
-  }, []);
+  }, [showSnackbar]);
 
   const handleFileSelect = async () => {
     try {
       const result = await invoke<[string, string] | null>("pick_file");
-
       if (result) {
         const [uri, filename] = result;
         setSelectedFile(uri);
@@ -106,7 +142,6 @@ function SendPage() {
   const handleFolderSelect = async () => {
     try {
       const result = await invoke<[string, string] | null>("pick_folder");
-
       if (result) {
         const [uri, foldername] = result;
         setSelectedFile(uri);
@@ -125,14 +160,16 @@ function SendPage() {
     }
   };
 
-  const handleGeneratePassword = async () => {
+  const generatePassword = async (): Promise<string> => {
     try {
       const generatedPassword = await invoke<string>("generate_password");
       setPassword(generatedPassword);
       showSnackbar("Password generated", "success");
+      return generatedPassword;
     } catch (error) {
       console.error("Failed to generate password:", error);
       showSnackbar("Failed to generate password", "error");
+      return "";
     }
   };
 
@@ -142,20 +179,20 @@ function SendPage() {
       return;
     }
 
-    if (connectionMode === "connect" && !connectIp.trim()) {
+    if (config.mode === "connect" && !config.connectIp.trim()) {
       showSnackbar("Please enter target IP address", "error");
       return;
     }
 
     if (
-      (connectionMode === "relay_listen" || connectionMode === "relay_dial") &&
-      !relayAddr.trim()
+      (config.mode === "relay_listen" || config.mode === "relay_dial") &&
+      !config.relayAddr.trim()
     ) {
       showSnackbar("Please enter relay address", "error");
       return;
     }
 
-    if (connectionMode === "relay_dial" && !remotePeerId.trim()) {
+    if (config.mode === "relay_dial" && !config.remotePeerId.trim()) {
       showSnackbar("Please enter remote peer ID", "error");
       return;
     }
@@ -164,32 +201,22 @@ function SendPage() {
 
     // Auto-generate password in listen mode if not provided
     if (
-      (connectionMode === "listen" || connectionMode === "relay_listen") &&
+      (config.mode === "listen" || config.mode === "relay_listen") &&
       !sendPassword
     ) {
-      try {
-        sendPassword = await invoke<string>("generate_password");
-        setPassword(sendPassword);
-      } catch (error) {
-        console.error("Failed to generate password:", error);
-        showSnackbar("Failed to generate password", "error");
-        return;
-      }
+      sendPassword = await generatePassword();
     }
-
     if (!sendPassword) {
       showSnackbar("Please enter or generate a password", "error");
       return;
     }
 
     try {
+      setIsSending(true);
       await invoke("send_file", {
         fileUri: selectedFile,
         password: sendPassword,
-        connectionMode,
-        connectIp: connectIp.trim() || null,
-        relayAddr: relayAddr.trim() || null,
-        remotePeerId: remotePeerId.trim() || null,
+        config,
         port,
       });
     } catch (error) {
@@ -212,173 +239,177 @@ function SendPage() {
   };
 
   return (
-    <>
+    <Stack spacing={2}>
       <Typography variant="h6">Send File</Typography>
-      <Box sx={{ mb: 3 }}>
+
+      <Box sx={{ display: "flex", gap: 1 }}>
+        <TextField
+          fullWidth
+          label="File or Folder to Send"
+          placeholder="Select file or folder"
+          value={selectedFileName}
+          slotProps={{
+            input: {
+              readOnly: true,
+            },
+          }}
+          disabled={isSending}
+          title={selectedFileName}
+        />
+        <IconButton
+          color="primary"
+          onClick={handleFileSelect}
+          disabled={isSending}
+          size="medium"
+          title="Select file"
+        >
+          <FileIcon />
+        </IconButton>
+        <IconButton
+          color="primary"
+          onClick={handleFolderSelect}
+          disabled={isSending}
+          size="medium"
+          title="Select folder"
+        >
+          <FolderIcon />
+        </IconButton>
+      </Box>
+
+      <Box sx={{ display: "flex", gap: 1 }}>
+        <TextField
+          fullWidth
+          label="Password"
+          placeholder="Enter or generate password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          disabled={isSending}
+          type="text"
+        />
+        <IconButton
+          onClick={generatePassword}
+          color="primary"
+          disabled={isSending}
+          title="Generate password"
+        >
+          <AutorenewIcon />
+        </IconButton>
+        <IconButton
+          onClick={handleCopyPassword}
+          color="primary"
+          title="Copy password"
+        >
+          <CopyIcon />
+        </IconButton>
+      </Box>
+
+      <FormControl fullWidth disabled={isSending}>
+        <InputLabel>Connection Mode</InputLabel>
+        <Select
+          value={config.mode}
+          label="Connection Mode"
+          onChange={(e) => {
+            const mode = e.target.value;
+            switch (mode) {
+              case "connect":
+                setConfig({ mode, connectIp: "" });
+                break;
+              case "listen":
+                setConfig({ mode });
+                break;
+              case "relay_listen":
+                setConfig({ mode, relayAddr: "", peerId: "" });
+                break;
+              case "relay_dial":
+                setConfig({ mode, relayAddr: "", remotePeerId: "" });
+                break;
+            }
+          }}
+        >
+          <MenuItem value="listen">Listen</MenuItem>
+          <MenuItem value="connect">Connect</MenuItem>
+          <MenuItem value="relay_listen">Relay Listen</MenuItem>
+          <MenuItem value="relay_dial">Relay Dial</MenuItem>
+        </Select>
+      </FormControl>
+
+      {config.mode === "connect" && (
+        <TextField
+          fullWidth
+          label="Target IP Address"
+          placeholder="e.g., 192.168.1.100"
+          value={config.connectIp}
+          onChange={(e) =>
+            setConfig((prev) => ({ ...prev, connectIp: e.target.value }))
+          }
+          disabled={isSending}
+        />
+      )}
+
+      {(config.mode === "relay_listen" || config.mode === "relay_dial") && (
+        <TextField
+          fullWidth
+          label="Relay Address"
+          placeholder="e.g., /ip4/1.2.3.4/tcp/4001/p2p/12D3K..."
+          value={config.relayAddr}
+          onChange={(e) =>
+            setConfig((prev) => ({ ...prev, relayAddr: e.target.value }))
+          }
+          disabled={isSending}
+        />
+      )}
+
+      {config.mode === "relay_dial" && (
+        <TextField
+          fullWidth
+          label="Remote Peer ID"
+          placeholder="e.g., 12D3KooW..."
+          value={config.remotePeerId}
+          onChange={(e) =>
+            setConfig((prev) => ({ ...prev, remotePeerId: e.target.value }))
+          }
+          disabled={isSending}
+        />
+      )}
+
+      {config.mode === "relay_listen" && (
         <Box sx={{ display: "flex", gap: 1 }}>
           <TextField
             fullWidth
-            label="File or Folder to Send"
-            placeholder="Select file or folder"
-            value={selectedFileName}
+            label="Your Peer ID"
+            value={config.peerId}
+            placeholder="Waiting for peer ID..."
             slotProps={{
               input: {
                 readOnly: true,
               },
             }}
-            disabled={isSending}
-            title={selectedFileName}
+            title={config.peerId}
           />
           <IconButton
+            onClick={async () => {
+              try {
+                await writeText(config.peerId);
+                showSnackbar("Peer ID copied to clipboard", "success");
+              } catch (error) {
+                console.error("Failed to copy peer ID:", error);
+                showSnackbar("Failed to copy peer ID", "error");
+              }
+            }}
             color="primary"
-            onClick={handleFileSelect}
-            disabled={isSending}
-            size="medium"
-            title="Select file"
+            title="Copy Peer ID"
           >
-            <FileIcon />
+            <CopyIcon />
           </IconButton>
-          <IconButton
-            color="primary"
-            onClick={handleFolderSelect}
-            disabled={isSending}
-            size="medium"
-            title="Select folder"
-          >
-            <FolderIcon />
-          </IconButton>
-        </Box>
-      </Box>
-
-      <Box sx={{ mb: 3 }}>
-        <Box sx={{ display: "flex", gap: 1 }}>
-          <TextField
-            fullWidth
-            label="Password"
-            placeholder="Enter or generate password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            disabled={isSending}
-            type="text"
-          />
-          <IconButton
-            onClick={handleGeneratePassword}
-            color="primary"
-            disabled={isSending}
-            title="Generate password"
-          >
-            <RefreshIcon />
-          </IconButton>
-          {password && (
-            <IconButton
-              onClick={handleCopyPassword}
-              color="primary"
-              title="Copy password"
-            >
-              <CopyIcon />
-            </IconButton>
-          )}
-        </Box>
-      </Box>
-
-      <Box sx={{ mb: 3 }}>
-        <FormControl fullWidth disabled={isSending}>
-          <InputLabel>Connection Mode</InputLabel>
-          <Select
-            value={connectionMode}
-            label="Connection Mode"
-            onChange={(e) =>
-              setConnectionMode(e.target.value as ConnectionMode)
-            }
-          >
-            <MenuItem value="listen">Listen</MenuItem>
-            <MenuItem value="connect">Connect</MenuItem>
-            <MenuItem value="relay_listen">Relay Listen</MenuItem>
-            <MenuItem value="relay_dial">Relay Dial</MenuItem>
-          </Select>
-        </FormControl>
-      </Box>
-
-      {connectionMode === "connect" && (
-        <Box sx={{ mb: 3 }}>
-          <TextField
-            fullWidth
-            label="Target IP Address"
-            placeholder="e.g., 192.168.1.100"
-            value={connectIp}
-            onChange={(e) => setConnectIp(e.target.value)}
-            disabled={isSending}
-          />
-        </Box>
-      )}
-
-      {(connectionMode === "relay_listen" ||
-        connectionMode === "relay_dial") && (
-        <Box sx={{ mb: 3 }}>
-          <TextField
-            fullWidth
-            label="Relay Address"
-            placeholder="e.g., /ip4/1.2.3.4/tcp/4001/p2p/12D3K..."
-            value={relayAddr}
-            onChange={(e) => setRelayAddr(e.target.value)}
-            disabled={isSending}
-          />
-        </Box>
-      )}
-
-      {connectionMode === "relay_dial" && (
-        <Box sx={{ mb: 3 }}>
-          <TextField
-            fullWidth
-            label="Remote Peer ID"
-            placeholder="e.g., 12D3KooW..."
-            value={remotePeerId}
-            onChange={(e) => setRemotePeerId(e.target.value)}
-            disabled={isSending}
-          />
-        </Box>
-      )}
-
-      {connectionMode === "relay_listen" && (
-        <Box sx={{ mb: 3 }}>
-          <Box sx={{ display: "flex", gap: 1 }}>
-            <TextField
-              fullWidth
-              label="Your Peer ID"
-              value={peerId}
-              placeholder="Waiting for peer ID..."
-              slotProps={{
-                input: {
-                  readOnly: true,
-                },
-              }}
-              title={peerId}
-            />
-            <IconButton
-              onClick={async () => {
-                try {
-                  await writeText(peerId);
-                  showSnackbar("Peer ID copied to clipboard", "success");
-                } catch (error) {
-                  console.error("Failed to copy peer ID:", error);
-                  showSnackbar("Failed to copy peer ID", "error");
-                }
-              }}
-              color="primary"
-              title="Copy Peer ID"
-            >
-              <CopyIcon />
-            </IconButton>
-          </Box>
         </Box>
       )}
 
       {status && (
-        <Box sx={{ mb: 3 }}>
+        <Box>
           <Typography variant="body2" color="primary" sx={{ mb: 1 }}>
             {status}
           </Typography>
-          {isSending && (
+          {progress > 0 && (
             <LinearProgress variant="determinate" value={progress} />
           )}
         </Box>
@@ -406,7 +437,7 @@ function SendPage() {
           STOP
         </Button>
       )}
-    </>
+    </Stack>
   );
 }
 

@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import {
   Box,
+  Stack,
   TextField,
   Typography,
   Alert,
@@ -19,10 +20,6 @@ function SettingsPage() {
   const [version, setVersion] = useState<string>("");
   const { showSnackbar } = useSnackbar();
 
-  useEffect(() => {
-    loadSettings();
-  }, []);
-
   const loadSettings = async () => {
     try {
       const folderPath = await invoke<string>("get_default_folder");
@@ -34,7 +31,11 @@ function SettingsPage() {
     }
   };
 
-  const handleSelectFolder = async () => {
+  useEffect(() => {
+    loadSettings();
+  }, []);
+
+  const handleFolderSelect = async () => {
     try {
       const result = await invoke<[string, string] | null>("pick_folder");
       if (result) {
@@ -49,73 +50,67 @@ function SettingsPage() {
   };
 
   return (
-    <>
+    <Stack spacing={2}>
       <Typography variant="h6">Settings</Typography>
 
-      <Box sx={{ mb: 3 }}>
-        <Typography variant="body2" color="text.secondary" gutterBottom>
-          Default Receive Folder
-        </Typography>
-        <Box sx={{ display: "flex", gap: 1 }}>
+      <Stack spacing={1}>
+        <Stack spacing={0}>
+          <Typography variant="body2" color="text.secondary">
+            Default Receive Folder
+          </Typography>
+          <Box sx={{ display: "flex", gap: 1 }}>
+            <TextField
+              fullWidth
+              placeholder="Select default folder"
+              value={defaultFolder}
+              slotProps={{
+                input: {
+                  readOnly: true,
+                },
+              }}
+              size="small"
+              title={defaultFolder}
+            />
+            <IconButton
+              color="primary"
+              onClick={handleFolderSelect}
+              size="medium"
+              title="Select folder"
+            >
+              <FolderIcon />
+            </IconButton>
+          </Box>
+        </Stack>
+
+        <Stack spacing={0}>
+          <Typography variant="body2" color="text.secondary">
+            Port Configuration
+          </Typography>
           <TextField
             fullWidth
-            placeholder="Select default folder"
-            value={defaultFolder}
+            placeholder="Port number (1-65535)"
+            value={port}
+            onChange={(e) => setPort(Number(e.target.value))}
+            size="small"
+            type="number"
             slotProps={{
               input: {
-                readOnly: true,
+                inputProps: { min: 1, max: 65535 },
               },
             }}
-            size="small"
-            title={defaultFolder}
           />
-          <IconButton
-            color="primary"
-            onClick={handleSelectFolder}
-            size="medium"
-            title="Select folder"
-          >
-            <FolderIcon />
-          </IconButton>
-        </Box>
-      </Box>
+        </Stack>
+      </Stack>
 
-      <Box sx={{ mb: 3 }}>
-        <Typography variant="body2" color="text.secondary" gutterBottom>
-          Port Configuration
-        </Typography>
-        <TextField
-          fullWidth
-          placeholder="Port number (1-65535)"
-          value={port}
-          onChange={(e) => setPort(Number(e.target.value))}
-          size="small"
-          type="number"
-          slotProps={{
-            input: {
-              inputProps: { min: 1, max: 65535 },
-            },
-          }}
-        />
-      </Box>
-
-      <Alert severity="info" sx={{ mt: 2 }}>
+      <Alert severity="info">
         Android: Files will be saved to the Download folder. The folder
         selection above is used as a reference but actual files go to Download.
       </Alert>
 
-      <Box
-        sx={{
-          mt: 4,
-          textAlign: "center",
-          color: "text.secondary",
-        }}
-      >
-        <Typography variant="caption" display="block">
-          Flying v{version}
-        </Typography>
+      <Box sx={{ textAlign: "center", color: "text.secondary" }}>
+        <Typography variant="caption">Flying v{version}</Typography>
       </Box>
-    </>
+    </Stack>
   );
 }
 
