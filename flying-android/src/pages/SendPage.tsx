@@ -26,40 +26,7 @@ import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { useAtomValue } from "jotai";
 import { portAtom } from "../store";
 import { useSnackbar } from "../hooks";
-
-type TransferStatusPayload = {
-  status: "Ready" | "Sending" | "Completed" | "Error";
-  progress: number;
-  message?: string;
-  peerId?: string;
-};
-
-type ConnectConfig = {
-  mode: "connect";
-  connectIp: string;
-};
-
-type ListenConfig = {
-  mode: "listen";
-};
-
-type RelayListenConfig = {
-  mode: "relay_listen";
-  relayAddr: string;
-  peerId: string;
-};
-
-type RelayDialConfig = {
-  mode: "relay_dial";
-  relayAddr: string;
-  remotePeerId: string;
-};
-
-type ConnectionConfig =
-  | ConnectConfig
-  | ListenConfig
-  | RelayListenConfig
-  | RelayDialConfig;
+import type { ConnectionConfig, TransferStatusPayload } from "../types";
 
 function SendPage() {
   const [selectedFile, setSelectedFile] = useState<string>("");
@@ -91,6 +58,7 @@ function SendPage() {
             if (peerId && configModeRef.current === "relay_listen") {
               setConfig((prev) => ({ ...prev, peerId }));
             }
+            setIsSending(true);
             setStatus("Waiting for connection...");
             break;
           case "Sending":
@@ -103,6 +71,7 @@ function SendPage() {
             setStatus("Send completed!");
             setProgress(100);
             showSnackbar("File sent successfully", "success");
+
             if (timerRef.current) clearTimeout(timerRef.current);
             timerRef.current = setTimeout(() => {
               setStatus("");
@@ -121,7 +90,6 @@ function SendPage() {
 
     return () => {
       unlisten.then((fn) => fn());
-      if (timerRef.current) clearTimeout(timerRef.current);
     };
   }, [showSnackbar]);
 
@@ -153,13 +121,6 @@ function SendPage() {
     }
   };
 
-  const handleCopyPassword = async () => {
-    if (password) {
-      await writeText(password);
-      showSnackbar("Password copied to clipboard", "success");
-    }
-  };
-
   const generatePassword = async (): Promise<string> => {
     try {
       const generatedPassword = await invoke<string>("generate_password");
@@ -170,6 +131,13 @@ function SendPage() {
       console.error("Failed to generate password:", error);
       showSnackbar("Failed to generate password", "error");
       return "";
+    }
+  };
+
+  const handleCopyPassword = async () => {
+    if (password) {
+      await writeText(password);
+      showSnackbar("Password copied to clipboard", "success");
     }
   };
 
@@ -199,7 +167,6 @@ function SendPage() {
 
     let sendPassword = password.trim();
 
-    // Auto-generate password in listen mode if not provided
     if (
       (config.mode === "listen" || config.mode === "relay_listen") &&
       !sendPassword

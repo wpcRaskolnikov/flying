@@ -1,7 +1,8 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   Box,
   Button,
+  Stack,
   TextField,
   Select,
   MenuItem,
@@ -15,7 +16,7 @@ import {
   Download as DownloadIcon,
   ContentCopy as CopyIcon,
   Folder as FolderIcon,
-  Refresh as RefreshIcon,
+  Autorenew as AutorenewIcon,
   Stop as StopIcon,
 } from "@mui/icons-material";
 import { invoke } from "@tauri-apps/api/core";
@@ -24,96 +25,84 @@ import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { useAtomValue } from "jotai";
 import { portAtom } from "../store";
 import { useSnackbar } from "../hooks";
-
-type ConnectionMode = "listen" | "connect" | "relay_listen" | "relay_dial";
+import type { ConnectionConfig, TransferStatusPayload } from "../types";
 
 function ReceivePage() {
+  const [outputDirUri, setOutputDirUri] = useState<string>("");
+  const [outputDirName, setOutputDirName] = useState<string>("");
   const [password, setPassword] = useState("");
-  const [connectionMode, setConnectionMode] =
-    useState<ConnectionMode>("connect");
-  const [connectIp, setConnectIp] = useState("");
-  const [relayAddr, setRelayAddr] = useState("");
-  const [remotePeerId, setRemotePeerId] = useState("");
-  const [peerId, setPeerId] = useState("");
+  const [config, setConfig] = useState<ConnectionConfig>({
+    mode: "connect",
+    connectIp: "",
+  });
   const [isReceiving, setIsReceiving] = useState(false);
   const [status, setStatus] = useState("");
   const [progress, setProgress] = useState(0);
-  const [outputDirUri, setOutputDirUri] = useState<string | null>(null);
-  const [outputDirName, setOutputDirName] = useState<string | null>(null);
+
   const port = useAtomValue(portAtom);
   const { showSnackbar } = useSnackbar();
 
+  const configModeRef = useRef(config.mode);
+  configModeRef.current = config.mode;
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const loadDefaultFolder = async () => {
+    try {
+      const folderPath = await invoke<string>("get_default_folder");
+      setOutputDirName(folderPath);
+      setOutputDirUri(folderPath);
+    } catch (error) {
+      console.error("Failed to load default folder:", error);
+    }
+  };
+
   useEffect(() => {
-    const loadDefaultFolder = async () => {
-      try {
-        const folderPath = await invoke<string>("get_default_folder");
-        setOutputDirName(folderPath);
-        setOutputDirUri(folderPath);
-      } catch (error) {
-        console.error("Failed to load default folder:", error);
-      }
-    };
     loadDefaultFolder();
 
-    const unlisten1 = listen("receive-start", () => {
-      setIsReceiving(true);
-      setStatus("Receiving file...");
-      setProgress(0);
-    });
+    const unlisten = listen<TransferStatusPayload>(
+      "receive-status-update",
+      (event) => {
+        const { status, progress, message, peerId } = event.payload;
 
-    const unlisten2 = listen("receive-complete", () => {
-      setIsReceiving(false);
-      setStatus("Receive completed!");
-      setProgress(100);
-      showSnackbar("File received successfully", "success");
-      setTimeout(() => {
-        setStatus("");
-        setProgress(0);
-      }, 2000);
-    });
+        switch (status) {
+          case "Ready":
+            if (peerId && configModeRef.current === "relay_listen") {
+              setConfig((prev) => ({ ...prev, peerId }));
+            }
+            setIsReceiving(true);
+            setStatus("Waiting for connection...");
+            break;
+          case "Sending":
+            setIsReceiving(true);
+            setProgress(progress);
+            setStatus(`Receiving file... ${progress}%`);
+            break;
+          case "Completed":
+            setIsReceiving(false);
+            setStatus("Receive completed!");
+            setProgress(100);
+            showSnackbar("File received successfully", "success");
 
-    const unlisten3 = listen<string>("receive-error", (event) => {
-      setIsReceiving(false);
-      setStatus("");
-      setProgress(0);
-      showSnackbar(event.payload, "error");
-    });
-
-    const unlisten4 = listen<number>("receive-progress", (event) => {
-      setProgress(event.payload);
-      setStatus(`Receiving file... ${event.payload}%`);
-    });
-
-    const unlisten5 = listen<string>("receive-ready", (event) => {
-      setPeerId(event.payload);
-    });
+            if (timerRef.current) clearTimeout(timerRef.current);
+            timerRef.current = setTimeout(() => {
+              setStatus("");
+              setProgress(0);
+            }, 2000);
+            break;
+          case "Error":
+            setIsReceiving(false);
+            setStatus("");
+            setProgress(0);
+            showSnackbar(message || "An error occurred", "error");
+            break;
+        }
+      },
+    );
 
     return () => {
-      unlisten1.then((fn) => fn());
-      unlisten2.then((fn) => fn());
-      unlisten3.then((fn) => fn());
-      unlisten4.then((fn) => fn());
-      unlisten5.then((fn) => fn());
+      unlisten.then((fn) => fn());
     };
-  }, []);
-
-  const handleCopyPassword = async () => {
-    if (password) {
-      await writeText(password);
-      showSnackbar("Password copied to clipboard", "success");
-    }
-  };
-
-  const handleGeneratePassword = async () => {
-    try {
-      const generatedPassword = await invoke<string>("generate_password");
-      setPassword(generatedPassword);
-      showSnackbar("Password generated", "success");
-    } catch (error) {
-      console.error("Failed to generate password:", error);
-      showSnackbar("Failed to generate password", "error");
-    }
-  };
+  }, [showSnackbar]);
 
   const handlePickFolder = async () => {
     try {
@@ -122,11 +111,30 @@ function ReceivePage() {
         const [uri, _name] = result;
         setOutputDirUri(uri);
         setOutputDirName(uri);
-        showSnackbar(`Output folder set to: ${uri}`, "success");
       }
     } catch (error) {
       console.error("Failed to pick folder:", error);
       showSnackbar(`Failed to pick folder: ${error}`, "error");
+    }
+  };
+
+  const generatePassword = async (): Promise<string> => {
+    try {
+      const generatedPassword = await invoke<string>("generate_password");
+      setPassword(generatedPassword);
+      showSnackbar("Password generated", "success");
+      return generatedPassword;
+    } catch (error) {
+      console.error("Failed to generate password:", error);
+      showSnackbar("Failed to generate password", "error");
+      return "";
+    }
+  };
+
+  const handleCopyPassword = async () => {
+    if (password) {
+      await writeText(password);
+      showSnackbar("Password copied to clipboard", "success");
     }
   };
 
@@ -136,20 +144,20 @@ function ReceivePage() {
       return;
     }
 
-    if (connectionMode === "connect" && !connectIp.trim()) {
+    if (config.mode === "connect" && !config.connectIp.trim()) {
       showSnackbar("Please enter target IP address", "error");
       return;
     }
 
     if (
-      (connectionMode === "relay_listen" || connectionMode === "relay_dial") &&
-      !relayAddr.trim()
+      (config.mode === "relay_listen" || config.mode === "relay_dial") &&
+      !config.relayAddr.trim()
     ) {
       showSnackbar("Please enter relay address", "error");
       return;
     }
 
-    if (connectionMode === "relay_dial" && !remotePeerId.trim()) {
+    if (config.mode === "relay_dial" && !config.remotePeerId.trim()) {
       showSnackbar("Please enter remote peer ID", "error");
       return;
     }
@@ -157,19 +165,11 @@ function ReceivePage() {
     let receivePassword = password.trim();
 
     if (
-      (connectionMode === "listen" || connectionMode === "relay_listen") &&
+      (config.mode === "listen" || config.mode === "relay_listen") &&
       !receivePassword
     ) {
-      try {
-        receivePassword = await invoke<string>("generate_password");
-        setPassword(receivePassword);
-      } catch (error) {
-        console.error("Failed to generate password:", error);
-        showSnackbar("Failed to generate password", "error");
-        return;
-      }
+      receivePassword = await generatePassword();
     }
-
     if (!receivePassword) {
       showSnackbar("Please enter or generate a password", "error");
       return;
@@ -178,10 +178,7 @@ function ReceivePage() {
     try {
       await invoke("receive_file", {
         password: receivePassword,
-        connectionMode,
-        connectIp: connectIp.trim() || null,
-        relayAddr: relayAddr.trim() || null,
-        remotePeerId: remotePeerId.trim() || null,
+        config,
         outputDirUri: outputDirUri,
         port,
       });
@@ -205,164 +202,168 @@ function ReceivePage() {
   };
 
   return (
-    <>
+    <Stack spacing={2}>
       <Typography variant="h6">Receive File</Typography>
-      <Box sx={{ mb: 3 }}>
+
+      <Box sx={{ display: "flex", gap: 1 }}>
+        <TextField
+          fullWidth
+          label="Output Folder"
+          placeholder="Select output folder"
+          value={outputDirName || ""}
+          slotProps={{
+            input: {
+              readOnly: true,
+            },
+          }}
+          disabled={isReceiving}
+          title={outputDirName || ""}
+        />
+        <IconButton
+          color="primary"
+          onClick={handlePickFolder}
+          disabled={isReceiving}
+          size="medium"
+          title="Select folder"
+        >
+          <FolderIcon />
+        </IconButton>
+      </Box>
+
+      <Box sx={{ display: "flex", gap: 1 }}>
+        <TextField
+          fullWidth
+          label="Password"
+          placeholder="Enter or generate password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          disabled={isReceiving}
+          type="text"
+        />
+        <IconButton
+          onClick={generatePassword}
+          color="primary"
+          disabled={isReceiving}
+          title="Generate password"
+        >
+          <AutorenewIcon />
+        </IconButton>
+        <IconButton
+          onClick={handleCopyPassword}
+          color="primary"
+          title="Copy password"
+        >
+          <CopyIcon />
+        </IconButton>
+      </Box>
+
+      <FormControl fullWidth disabled={isReceiving}>
+        <InputLabel>Connection Mode</InputLabel>
+        <Select
+          value={config.mode}
+          label="Connection Mode"
+          onChange={(e) => {
+            const mode = e.target.value;
+            switch (mode) {
+              case "connect":
+                setConfig({ mode, connectIp: "" });
+                break;
+              case "listen":
+                setConfig({ mode });
+                break;
+              case "relay_listen":
+                setConfig({ mode, relayAddr: "", peerId: "" });
+                break;
+              case "relay_dial":
+                setConfig({ mode, relayAddr: "", remotePeerId: "" });
+                break;
+            }
+          }}
+        >
+          <MenuItem value="listen">Listen</MenuItem>
+          <MenuItem value="connect">Connect</MenuItem>
+          <MenuItem value="relay_listen">Relay Listen</MenuItem>
+          <MenuItem value="relay_dial">Relay Dial</MenuItem>
+        </Select>
+      </FormControl>
+
+      {config.mode === "connect" && (
+        <TextField
+          fullWidth
+          label="Target IP Address"
+          placeholder="e.g., 192.168.1.100"
+          value={config.connectIp}
+          onChange={(e) =>
+            setConfig((prev) => ({ ...prev, connectIp: e.target.value }))
+          }
+          disabled={isReceiving}
+        />
+      )}
+
+      {(config.mode === "relay_listen" || config.mode === "relay_dial") && (
+        <TextField
+          fullWidth
+          label="Relay Address"
+          placeholder="e.g., /ip4/1.2.3.4/tcp/4001/p2p/12D3K..."
+          value={config.relayAddr}
+          onChange={(e) =>
+            setConfig((prev) => ({ ...prev, relayAddr: e.target.value }))
+          }
+          disabled={isReceiving}
+        />
+      )}
+
+      {config.mode === "relay_dial" && (
+        <TextField
+          fullWidth
+          label="Remote Peer ID"
+          placeholder="e.g., 12D3KooW..."
+          value={config.remotePeerId}
+          onChange={(e) =>
+            setConfig((prev) => ({ ...prev, remotePeerId: e.target.value }))
+          }
+          disabled={isReceiving}
+        />
+      )}
+
+      {config.mode === "relay_listen" && (
         <Box sx={{ display: "flex", gap: 1 }}>
           <TextField
             fullWidth
-            label="Output Folder"
-            placeholder="Select output folder"
-            value={outputDirName || ""}
+            label="Your Peer ID"
+            value={config.peerId}
+            placeholder="Waiting for peer ID..."
             slotProps={{
               input: {
                 readOnly: true,
               },
             }}
-            disabled={isReceiving}
-            title={outputDirName || ""}
+            title={config.peerId}
           />
           <IconButton
+            onClick={async () => {
+              try {
+                await writeText(config.peerId);
+                showSnackbar("Peer ID copied to clipboard", "success");
+              } catch (error) {
+                console.error("Failed to copy peer ID:", error);
+                showSnackbar("Failed to copy peer ID", "error");
+              }
+            }}
             color="primary"
-            onClick={handlePickFolder}
-            disabled={isReceiving}
-            size="medium"
-            title="Select folder"
+            title="Copy Peer ID"
           >
-            <FolderIcon />
+            <CopyIcon />
           </IconButton>
-        </Box>
-      </Box>
-
-      <Box sx={{ mb: 3 }}>
-        <Box sx={{ display: "flex", gap: 1 }}>
-          <TextField
-            fullWidth
-            label="Password"
-            placeholder="Enter or generate password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            disabled={isReceiving}
-            type="text"
-          />
-          <IconButton
-            onClick={handleGeneratePassword}
-            color="primary"
-            disabled={isReceiving}
-            title="Generate password"
-          >
-            <RefreshIcon />
-          </IconButton>
-          {password && (
-            <IconButton
-              onClick={handleCopyPassword}
-              color="primary"
-              title="Copy password"
-            >
-              <CopyIcon />
-            </IconButton>
-          )}
-        </Box>
-      </Box>
-
-      <Box sx={{ mb: 3 }}>
-        <FormControl fullWidth disabled={isReceiving}>
-          <InputLabel>Connection Mode</InputLabel>
-          <Select
-            value={connectionMode}
-            label="Connection Mode"
-            onChange={(e) =>
-              setConnectionMode(e.target.value as ConnectionMode)
-            }
-          >
-            <MenuItem value="listen">Listen</MenuItem>
-            <MenuItem value="connect">Connect</MenuItem>
-            <MenuItem value="relay_listen">Relay Listen</MenuItem>
-            <MenuItem value="relay_dial">Relay Dial</MenuItem>
-          </Select>
-        </FormControl>
-      </Box>
-
-      {connectionMode === "connect" && (
-        <Box sx={{ mb: 3 }}>
-          <TextField
-            fullWidth
-            label="Target IP Address"
-            placeholder="e.g., 192.168.1.100"
-            value={connectIp}
-            onChange={(e) => setConnectIp(e.target.value)}
-            disabled={isReceiving}
-          />
-        </Box>
-      )}
-
-      {(connectionMode === "relay_listen" ||
-        connectionMode === "relay_dial") && (
-        <Box sx={{ mb: 3 }}>
-          <TextField
-            fullWidth
-            label="Relay Address"
-            placeholder="e.g., /ip4/1.2.3.4/tcp/4001/p2p/12D3K..."
-            value={relayAddr}
-            onChange={(e) => setRelayAddr(e.target.value)}
-            disabled={isReceiving}
-          />
-        </Box>
-      )}
-
-      {connectionMode === "relay_dial" && (
-        <Box sx={{ mb: 3 }}>
-          <TextField
-            fullWidth
-            label="Remote Peer ID"
-            placeholder="e.g., 12D3KooW..."
-            value={remotePeerId}
-            onChange={(e) => setRemotePeerId(e.target.value)}
-            disabled={isReceiving}
-          />
-        </Box>
-      )}
-
-      {connectionMode === "relay_listen" && (
-        <Box sx={{ mb: 3 }}>
-          <Box sx={{ display: "flex", gap: 1 }}>
-            <TextField
-              fullWidth
-              label="Your Peer ID"
-              value={peerId}
-              placeholder="Waiting for peer ID..."
-              slotProps={{
-                input: {
-                  readOnly: true,
-                },
-              }}
-              title={peerId}
-            />
-            <IconButton
-              onClick={async () => {
-                try {
-                  await writeText(peerId);
-                  showSnackbar("Peer ID copied to clipboard", "success");
-                } catch (error) {
-                  console.error("Failed to copy peer ID:", error);
-                  showSnackbar("Failed to copy peer ID", "error");
-                }
-              }}
-              color="primary"
-              title="Copy Peer ID"
-            >
-              <CopyIcon />
-            </IconButton>
-          </Box>
         </Box>
       )}
 
       {status && (
-        <Box sx={{ mb: 3 }}>
+        <Box>
           <Typography variant="body2" color="primary" sx={{ mb: 1 }}>
             {status}
           </Typography>
-          {isReceiving && (
+          {progress > 0 && (
             <LinearProgress variant="determinate" value={progress} />
           )}
         </Box>
@@ -390,7 +391,7 @@ function ReceivePage() {
           STOP
         </Button>
       )}
-    </>
+    </Stack>
   );
 }
 
