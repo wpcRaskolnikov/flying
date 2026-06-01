@@ -117,11 +117,8 @@ pub async fn stop_collab_server(state: tauri::State<'_, CollabServerState>) -> R
 }
 
 #[tauri::command]
-pub async fn get_collab_server_status(
+pub async fn is_collab_server_running(
     state: tauri::State<'_, CollabServerState>,
-) -> Result<serde_json::Value, String> {
-    let is_running = state.abort_handle.lock().unwrap().is_some();
-    Ok(serde_json::json!({
-        "status": if is_running { "running" } else { "idle" }
-    }))
+) -> Result<bool, String> {
+    Ok(state.abort_handle.lock().unwrap().is_some())
 }

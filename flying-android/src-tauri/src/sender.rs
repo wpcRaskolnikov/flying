@@ -1,7 +1,8 @@
 use crate::utils::{TransferState, TransferStatusPayload};
-use std::sync::Arc;
 
 use flying::mdns::ServiceDaemon;
+
+use std::sync::Arc;
 
 use tauri::Emitter;
 
@@ -20,9 +21,17 @@ use {
 #[serde(tag = "mode", rename_all = "snake_case")]
 pub enum ConnectionConfig {
     Listen,
-    Connect { connect_ip: String },
-    RelayListen { relay_addr: String, peer_id: String },
-    RelayDial { relay_addr: String, remote_peer_id: String },
+    Connect {
+        connect_ip: String,
+    },
+    RelayListen {
+        relay_addr: String,
+        peer_id: String,
+    },
+    RelayDial {
+        relay_addr: String,
+        remote_peer_id: String,
+    },
 }
 
 impl ConnectionConfig {
@@ -36,9 +45,14 @@ impl ConnectionConfig {
                 let multiaddr = relay_addr
                     .parse()
                     .map_err(|e| format!("Invalid multiaddr: {}", e))?;
-                Ok(flying::ConnectionMode::RelayListen { relay_addr: multiaddr })
+                Ok(flying::ConnectionMode::RelayListen {
+                    relay_addr: multiaddr,
+                })
             }
-            ConnectionConfig::RelayDial { relay_addr, remote_peer_id } => {
+            ConnectionConfig::RelayDial {
+                relay_addr,
+                remote_peer_id,
+            } => {
                 let multiaddr = relay_addr
                     .parse()
                     .map_err(|e| format!("Invalid multiaddr: {}", e))?;

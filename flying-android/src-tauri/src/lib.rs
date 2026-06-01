@@ -18,19 +18,18 @@ pub fn run() {
         .manage(TransferState::default())
         .manage(CollabServerState::default())
         .invoke_handler(tauri::generate_handler![
-            discovery::generate_password,
             discovery::discover_hosts,
-            discovery::discover_collab_hosts,
             file_picker::pick_file,
             file_picker::pick_folder,
             sender::send_file,
             sender::cancel_send,
             receiver::receive_file,
             receiver::cancel_receive,
+            utils::generate_password,
             utils::get_default_folder,
             collab_server::start_collab_server,
             collab_server::stop_collab_server,
-            collab_server::get_collab_server_status,
+            collab_server::is_collab_server_running,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

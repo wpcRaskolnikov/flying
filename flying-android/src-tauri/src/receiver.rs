@@ -1,12 +1,12 @@
 use crate::sender::ConnectionConfig;
 use crate::utils::{TransferState, TransferStatusPayload};
-use std::sync::Arc;
 
 use flying::mdns::ServiceDaemon;
 
 use tauri::Emitter;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use tokio::sync::{mpsc, oneshot};
 
@@ -52,7 +52,6 @@ pub async fn receive_file(
         {
             output_dir = PathBuf::from("/storage/emulated/0/Download");
         }
-
         #[cfg(not(target_os = "android"))]
         {
             output_dir = PathBuf::from(output_dir_uri);

@@ -38,12 +38,7 @@ function DiscoverPage() {
     setHosts([]);
 
     try {
-      const [transferHosts, collabHosts] = await Promise.all([
-        invoke<DiscoveredHost[]>("discover_hosts"),
-        invoke<DiscoveredHost[]>("discover_collab_hosts"),
-      ]);
-
-      const allHosts = [...transferHosts, ...collabHosts];
+      const allHosts = await invoke<DiscoveredHost[]>("discover_hosts");
       setHosts(allHosts);
 
       if (allHosts.length === 0) {

@@ -1,4 +1,8 @@
+use flying::mdns::{discover_collab_services, discover_services};
+
 use serde::{Deserialize, Serialize};
+
+use tokio::task::spawn_blocking;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -10,48 +14,39 @@ pub struct DiscoveredHost {
 }
 
 #[tauri::command]
-pub fn generate_password() -> Result<String, String> {
-    Ok(flying::generate_password())
-}
-
-#[tauri::command]
 pub async fn discover_hosts() -> Result<Vec<DiscoveredHost>, String> {
-    let services = tokio::task::spawn_blocking(|| {
-        flying::mdns::discover_services(3).map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| format!("Task join error: {}", e))??;
+    let transfer_handle = spawn_blocking(|| discover_services(3).map_err(|e| e.to_string()));
+    let collab_handle = spawn_blocking(|| discover_collab_services(3).map_err(|e| e.to_string()));
 
-    let discovered: Vec<DiscoveredHost> = services
-        .into_iter()
-        .map(|service| DiscoveredHost {
-            name: service.hostname,
-            ip: service.ip.to_string(),
-            port: service.port,
-            service_type: "file-transfer".to_string(),
-        })
-        .collect();
+    let (transfer_result, collab_result) = tokio::join!(transfer_handle, collab_handle);
 
-    Ok(discovered)
-}
+    let mut discovered = Vec::new();
 
-#[tauri::command]
-pub async fn discover_collab_hosts() -> Result<Vec<DiscoveredHost>, String> {
-    let services = tokio::task::spawn_blocking(|| {
-        flying::mdns::discover_collab_services(3).map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| format!("Task join error: {}", e))??;
+    match transfer_result {
+        Ok(Ok(services)) => {
+            discovered.extend(services.into_iter().map(|service| DiscoveredHost {
+                name: service.hostname,
+                ip: service.ip.to_string(),
+                port: service.port,
+                service_type: "file-transfer".to_string(),
+            }));
+        }
+        Ok(Err(e)) => eprintln!("File transfer discovery failed: {}", e),
+        Err(e) => eprintln!("File transfer discovery task panicked: {}", e),
+    }
 
-    let discovered: Vec<DiscoveredHost> = services
-        .into_iter()
-        .map(|service| DiscoveredHost {
-            name: service.hostname,
-            ip: service.ip.to_string(),
-            port: service.port,
-            service_type: "collab".to_string(),
-        })
-        .collect();
+    match collab_result {
+        Ok(Ok(services)) => {
+            discovered.extend(services.into_iter().map(|service| DiscoveredHost {
+                name: service.hostname,
+                ip: service.ip.to_string(),
+                port: service.port,
+                service_type: "collab".to_string(),
+            }));
+        }
+        Ok(Err(e)) => eprintln!("Collab discovery failed: {}", e),
+        Err(e) => eprintln!("Collab discovery task panicked: {}", e),
+    }
 
     Ok(discovered)
 }

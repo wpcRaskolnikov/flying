@@ -207,6 +207,11 @@ pub struct CollabServerState {
 }
 
 #[tauri::command]
+pub fn generate_password() -> Result<String, String> {
+    Ok(flying::generate_password())
+}
+
+#[tauri::command]
 pub fn get_default_folder(app: tauri::AppHandle) -> Result<String, String> {
     let store = app
         .store("settings.json")

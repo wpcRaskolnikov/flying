@@ -1,16 +1,13 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import {
   Box,
-  Button,
   Stack,
   TextField,
   Typography,
+  Button,
   Chip,
   Avatar,
-  List,
-  ListItem,
-  ListItemAvatar,
-  ListItemText,
+  AvatarGroup,
   IconButton,
   Select,
   Switch,
@@ -18,12 +15,18 @@ import {
   InputLabel,
   FormControl,
   Alert,
+  AppBar,
+  Toolbar,
+  Tooltip,
+  CircularProgress,
 } from "@mui/material";
 import {
   Group as GroupIcon,
   ContentCopy as CopyIcon,
   Stop as StopIcon,
   Wifi as WifiIcon,
+  Autorenew as AutorenewIcon,
+  Person as PersonIcon,
 } from "@mui/icons-material";
 import CodeMirror from "@uiw/react-codemirror";
 import { yCollab } from "y-codemirror.next";
@@ -32,17 +35,13 @@ import { WebsocketProvider } from "y-websocket";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { invoke } from "@tauri-apps/api/core";
 import { useSnackbar } from "../hooks";
+import { predicates, objects } from "friendly-words";
 
 interface Peer {
   id: number;
   color: string;
   name: string;
 }
-
-type ServerState =
-  | { status: "idle" }
-  | { status: "starting" }
-  | { status: "running" };
 
 const USER_COLORS = [
   { color: "#e57373", light: "#e5737333" },
@@ -61,224 +60,241 @@ function pickColor() {
 
 const DEFAULT_PORT = 18080;
 
-function CollabEditPage() {
-  const [roomName, setRoomName] = useState("");
-  const [userName, setUserName] = useState("");
-  const [serverAddr, setServerAddr] = useState("");
-  const [useWss, setUseWss] = useState(false);
-  const [peers, setPeers] = useState<Peer[]>([]);
-  const [inRoom, setInRoom] = useState(false);
-  const [connected, setConnected] = useState(false);
+function useYjsCollab() {
   const { showSnackbar } = useSnackbar();
-
-  // Local server state
-  const [serverState, setServerState] = useState<ServerState>({ status: "idle" });
 
   const ydocRef = useRef<Y.Doc | null>(null);
   const providerRef = useRef<WebsocketProvider | null>(null);
   const undoRef = useRef<Y.UndoManager | null>(null);
   const collabExtRef = useRef<any>(null);
-  const [editorExtensions, setEditorExtensions] = useState<any[]>([]);
-
-  // Persistent refs for event handlers so they can be reliably removed
   const handleStatusRef = useRef<((data: { status: string }) => void) | null>(
     null,
   );
   const updatePeersRef = useRef<(() => void) | null>(null);
 
-  // Poll local server status
+  const [peers, setPeers] = useState<Peer[]>([]);
+  const [connected, setConnected] = useState(false);
+  const [connecting, setConnecting] = useState(false);
+  const [currentRoom, setCurrentRoom] = useState("");
+  const [version, setVersion] = useState(0);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearConnectTimeout = useCallback(() => {
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
+    }
+  }, []);
+
+  const cleanup = useCallback(() => {
+    clearConnectTimeout();
+    const provider = providerRef.current;
+    if (provider) {
+      if (handleStatusRef.current)
+        provider.off("status", handleStatusRef.current);
+      if (updatePeersRef.current)
+        provider.awareness.off("change", updatePeersRef.current);
+      provider.destroy();
+      providerRef.current = null;
+    }
+    undoRef.current?.destroy();
+    undoRef.current = null;
+    ydocRef.current?.destroy();
+    ydocRef.current = null;
+    collabExtRef.current = null;
+    handleStatusRef.current = null;
+    updatePeersRef.current = null;
+    setPeers([]);
+    setConnected(false);
+    setConnecting(false);
+    setCurrentRoom("");
+  }, [clearConnectTimeout]);
+
+  // Unmount cleanup
   useEffect(() => {
-    let isMounted = true;
-    const checkStatus = async () => {
-      try {
-        const s = await invoke<ServerState>("get_collab_server_status");
-        if (isMounted) {
-          setServerState(s);
-        }
-      } catch {
-        // ignore
-      }
-    };
-    checkStatus();
-    const interval = setInterval(checkStatus, 2000);
     return () => {
-      isMounted = false;
-      clearInterval(interval);
+      providerRef.current?.destroy();
+      undoRef.current?.destroy();
+      ydocRef.current?.destroy();
     };
   }, []);
 
+  const joinRoom = useCallback(
+    (serverUrl: string, room: string, name: string) => {
+      // Kill any existing connection before creating a new one
+      cleanup();
+
+      const ydoc = new Y.Doc();
+      ydocRef.current = ydoc;
+
+      const ytext = ydoc.getText("codemirror");
+      const undoManager = new Y.UndoManager(ytext);
+      undoRef.current = undoManager;
+
+      const uc = pickColor();
+      const provider = new WebsocketProvider(serverUrl, room, ydoc);
+      providerRef.current = provider;
+
+      provider.awareness.setLocalStateField("user", {
+        name,
+        color: uc.color,
+        colorLight: uc.light,
+      });
+
+      collabExtRef.current = yCollab(ytext, provider.awareness, {
+        undoManager,
+      });
+
+      const updatePeers = () => {
+        const states = provider.awareness.getStates();
+        const list: Peer[] = [];
+        const localId = provider.awareness.clientID;
+        states.forEach((state: any, clientId: number) => {
+          if (clientId !== localId) {
+            const u = state.user || { name: "Anonymous", color: "#999" };
+            list.push({ id: clientId, color: u.color, name: u.name });
+          }
+        });
+        setPeers(list);
+      };
+      updatePeersRef.current = updatePeers;
+
+      const handleStatus = ({ status }: { status: string }) => {
+        if (status === "connected") {
+          clearConnectTimeout();
+          setConnected(true);
+          setConnecting(false);
+          setCurrentRoom(room);
+          showSnackbar(`Joined "${room}"`, "success");
+        } else if (status === "disconnected") {
+          setConnected(false);
+          showSnackbar("Connection lost, retrying...", "error");
+        }
+      };
+      handleStatusRef.current = handleStatus;
+
+      provider.on("status", handleStatus);
+      provider.awareness.on("change", updatePeers);
+      updatePeers();
+
+      // Timeout if connection doesn't succeed within 5s
+      setConnecting(true);
+      timeoutRef.current = setTimeout(() => {
+        showSnackbar(`Connection to ${serverUrl} timed out`, "error");
+        cleanup();
+      }, 5000);
+
+      // Bump version to force CodeMirror remount with new collab extension
+      setVersion((v) => v + 1);
+    },
+    [cleanup],
+  );
+
+  const leaveRoom = useCallback(() => {
+    cleanup();
+    showSnackbar("Left the room", "info");
+  }, [cleanup]);
+
+  const editorExtensions = useMemo(
+    () => (collabExtRef.current ? [collabExtRef.current] : []),
+    [version],
+  );
+
+  return {
+    peers,
+    connected,
+    connecting,
+    currentRoom,
+    editorExtensions,
+    editorKey: version,
+    joinRoom,
+    leaveRoom,
+  };
+}
+
+function CollabEditPage() {
+  const [isServerRunning, setIsServerRunning] = useState(false);
+  const [roomName, setRoomName] = useState("");
+  const [userName, setUserName] = useState("");
+  const [serverAddr, setServerAddr] = useState("");
+  const [useWss, setUseWss] = useState(false);
+  const { showSnackbar } = useSnackbar();
+
+  const {
+    peers,
+    connected,
+    connecting,
+    currentRoom,
+    editorExtensions,
+    editorKey,
+    joinRoom,
+    leaveRoom,
+  } = useYjsCollab();
+
+  const inRoom = currentRoom !== "";
+
   const handleToggleServer = async () => {
-    if (serverState.status === "running") {
+    if (isServerRunning) {
       try {
         await invoke("stop_collab_server");
-        setServerState({ status: "idle" });
-        notify("Local server stopped", "info");
+        setIsServerRunning(false);
+        showSnackbar("Local server stopped", "info");
       } catch (e: any) {
-        notify(`Failed to stop server: ${e}`, "error");
+        showSnackbar(`Failed to stop server: ${e}`, "error");
       }
     } else {
-      setServerState({ status: "starting" });
       try {
-        const result = await invoke("start_collab_server", {
-          port: DEFAULT_PORT,
-        });
-        setServerState({ status: "running" });
+        await invoke("start_collab_server", { port: DEFAULT_PORT });
+        setIsServerRunning(true);
         setServerAddr(`127.0.0.1:${DEFAULT_PORT}`);
         setUseWss(false);
-        notify(result as string, "success");
+        showSnackbar("Local server started", "success");
       } catch (e: any) {
-        notify(`Failed to start server: ${e}`, "error");
-        setServerState({ status: "idle" });
+        showSnackbar(`Failed to start server: ${e}`, "error");
+        setIsServerRunning(false);
       }
     }
   };
 
-  const notify = useCallback(
-    (message: string, severity: "success" | "error" | "info" = "info") => {
-      showSnackbar(message, severity);
-    },
-    [],
-  );
-
   const handleJoinRoom = () => {
+    if (!serverAddr.trim()) {
+      showSnackbar("Please enter server address", "error");
+      return;
+    }
     if (!roomName.trim()) {
-      notify("Please enter a room name", "error");
+      showSnackbar("Please enter a room name", "error");
       return;
     }
     if (!userName.trim()) {
-      notify("Please enter your name", "error");
-      return;
-    }
-    if (!serverAddr.trim()) {
-      notify("Please enter server address", "error");
+      showSnackbar("Please enter your name", "error");
       return;
     }
 
-    const ydoc = new Y.Doc();
-    ydocRef.current = ydoc;
-
-    const ytext = ydoc.getText("codemirror");
-    const undoManager = new Y.UndoManager(ytext);
-    undoRef.current = undoManager;
-
-    const uc = pickColor();
     const protocol = useWss ? "wss" : "ws";
-    const serverUrl = `${protocol}://${serverAddr.trim()}`;
-
-    notify(`Connecting to ${serverUrl}`, "info");
-
-    const provider = new WebsocketProvider(serverUrl, roomName.trim(), ydoc);
-    providerRef.current = provider;
-
-    provider.awareness.setLocalStateField("user", {
-      name: userName.trim(),
-      color: uc.color,
-      colorLight: uc.light,
-    });
-
-    collabExtRef.current = yCollab(ytext, provider.awareness, {
-      undoManager,
-    });
-    setEditorExtensions([collabExtRef.current]);
-
-    const updatePeers = () => {
-      const states = provider.awareness.getStates();
-      const list: Peer[] = [];
-      const localId = provider.awareness.clientID;
-      states.forEach((state: any, clientId: number) => {
-        if (clientId !== localId) {
-          const u = state.user || { name: "Anonymous", color: "#999" };
-          list.push({ id: clientId, color: u.color, name: u.name });
-        }
-      });
-      setPeers(list);
-    };
-    updatePeersRef.current = updatePeers;
-
-    // Wait for connection before entering editor
-    const handleStatus = ({ status }: { status: string }) => {
-      if (status === "connected") {
-        setConnected(true);
-        setInRoom(true);
-        notify(`Joined "${roomName}"`, "success");
-      } else if (status === "disconnected") {
-        setConnected(false);
-        notify("Connection lost, retrying...", "error");
-      }
-    };
-    handleStatusRef.current = handleStatus;
-
-    provider.on("status", handleStatus);
-    provider.awareness.on("change", updatePeers);
-    updatePeers();
+    joinRoom(
+      `${protocol}://${serverAddr.trim()}`,
+      roomName.trim(),
+      userName.trim(),
+    );
   };
-
-  const handleLeaveRoom = () => {
-    if (providerRef.current) {
-      // Remove event listeners before destroying to prevent memory leaks
-      if (handleStatusRef.current) {
-        providerRef.current.off("status", handleStatusRef.current);
-      }
-      if (providerRef.current.awareness && updatePeersRef.current) {
-        providerRef.current.awareness.off("change", updatePeersRef.current);
-      }
-      providerRef.current.destroy();
-      providerRef.current = null;
-    }
-    if (undoRef.current) {
-      undoRef.current.destroy();
-      undoRef.current = null;
-    }
-    if (ydocRef.current) {
-      ydocRef.current.destroy();
-      ydocRef.current = null;
-    }
-    collabExtRef.current = null;
-    setEditorExtensions([]);
-    setConnected(false);
-    setPeers([]);
-    setInRoom(false);
-    handleStatusRef.current = null;
-    updatePeersRef.current = null;
-    notify("Left the room", "info");
-  };
-
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      if (providerRef.current) {
-        if (handleStatusRef.current) {
-          providerRef.current.off("status", handleStatusRef.current);
-        }
-        if (providerRef.current.awareness && updatePeersRef.current) {
-          providerRef.current.awareness.off("change", updatePeersRef.current);
-        }
-        providerRef.current.destroy();
-      }
-      if (ydocRef.current) ydocRef.current.destroy();
-      if (undoRef.current) undoRef.current.destroy();
-    };
-  }, []);
 
   const handleCopyRoomName = async () => {
-    await writeText(roomName);
-    notify("Room name copied", "success");
+    await writeText(currentRoom);
+    showSnackbar("Room name copied", "success");
   };
 
-  const handleCreateRoom = () => {
-    setRoomName(`room-${Math.random().toString(36).substring(2, 8)}`);
+  const generateRoomName = () => {
+    const pick = (arr: string[]) => arr[Math.floor(Math.random() * arr.length)];
+    setRoomName(`${pick(predicates)}-${pick(objects)}`.toLowerCase());
+    showSnackbar("Room name generated", "success");
   };
 
   // --- Join screen ---
   if (!inRoom) {
     return (
-      <Stack spacing={2} sx={{ width: "100%" }}>
+      <Stack spacing={2}>
         <Typography variant="h6">Collaborative Editor</Typography>
-        <Typography variant="body2" color="text.secondary">
-          Enter a server address and room to start editing together.
-        </Typography>
 
-        {/* Local server toggle */}
         <Box
           sx={{
             display: "flex",
@@ -287,177 +303,173 @@ function CollabEditPage() {
           }}
         >
           <Typography variant="body2" color="text.secondary">
-            Local Collaboration Server
+            Start Local Collaboration Server
           </Typography>
-          {serverState.status === "starting" ? (
-            <Chip size="small" label="Starting..." color="warning" />
-          ) : (
-            <Switch
-              checked={serverState.status === "running"}
-              onChange={handleToggleServer}
-              color="success"
-              size="small"
-            />
-          )}
+          <Switch
+            checked={isServerRunning}
+            onChange={handleToggleServer}
+            color="success"
+            size="small"
+          />
         </Box>
-        {serverState.status === "running" && (
+        {isServerRunning && (
           <Alert severity="success">
             Server running on ws://0.0.0.0:{DEFAULT_PORT}
           </Alert>
         )}
 
-        <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
-          <Box sx={{ display: "flex", gap: 1, alignItems: "center" }}>
-            <FormControl size="small" sx={{ minWidth: 90 }}>
-              <InputLabel>Protocol</InputLabel>
-              <Select
-                value={useWss ? "wss" : "ws"}
-                label="Protocol"
-                onChange={(e) => setUseWss(e.target.value === "wss")}
-              >
-                <MenuItem value="ws">ws://</MenuItem>
-                <MenuItem value="wss">wss://</MenuItem>
-              </Select>
-            </FormControl>
-            <TextField
-              fullWidth
-              label="Server Address"
-              value={serverAddr}
-              onChange={(e) => setServerAddr(e.target.value)}
-              placeholder="e.g., 192.168.1.10:8080 or demos.yjs.dev"
-            />
-          </Box>
-
-          <Box sx={{ display: "flex", gap: 1, alignItems: "center" }}>
-            <TextField
-              fullWidth
-              label="Room Name"
-              value={roomName}
-              onChange={(e) => setRoomName(e.target.value)}
-              placeholder="Enter or create a room"
-            />
-            <Button variant="outlined" onClick={handleCreateRoom} size="large">
-              Generate
-            </Button>
-          </Box>
-
+        <Box sx={{ display: "flex", gap: 1, alignItems: "center" }}>
+          <FormControl size="small" sx={{ minWidth: 95 }}>
+            <InputLabel>Protocol</InputLabel>
+            <Select
+              value={useWss ? "wss" : "ws"}
+              label="Protocol"
+              onChange={(e) => setUseWss(e.target.value === "wss")}
+            >
+              <MenuItem value="ws">ws://</MenuItem>
+              <MenuItem value="wss">wss://</MenuItem>
+            </Select>
+          </FormControl>
           <TextField
-            label="Your Name"
-            value={userName}
-            onChange={(e) => setUserName(e.target.value)}
-            placeholder="How others will see you"
-          />
-
-          <Button
-            variant="contained"
-            size="large"
-            startIcon={<WifiIcon />}
-            onClick={handleJoinRoom}
             fullWidth
-          >
-            JOIN ROOM
-          </Button>
+            label="Server Address"
+            value={serverAddr}
+            onChange={(e) => setServerAddr(e.target.value)}
+            placeholder="e.g., 192.168.1.10:8080 or demos.yjs.dev"
+          />
         </Box>
+
+        <Box sx={{ display: "flex", gap: 1 }}>
+          <TextField
+            fullWidth
+            label="Room Name"
+            placeholder="Enter or create a room"
+            value={roomName}
+            onChange={(e) => setRoomName(e.target.value)}
+          />
+          <IconButton
+            onClick={generateRoomName}
+            color="primary"
+            title="Generate room name"
+          >
+            <AutorenewIcon />
+          </IconButton>
+          <IconButton
+            onClick={handleCopyRoomName}
+            color="primary"
+            title="Copy room name"
+          >
+            <CopyIcon />
+          </IconButton>
+        </Box>
+
+        <TextField
+          label="Your Name"
+          value={userName}
+          onChange={(e) => setUserName(e.target.value)}
+          placeholder="How others will see you"
+        />
+
+        <Button
+          variant="contained"
+          size="large"
+          startIcon={connecting ? <CircularProgress size={20} color="inherit" /> : <WifiIcon />}
+          onClick={handleJoinRoom}
+          fullWidth
+          disabled={connecting}
+        >
+          {connecting ? "Connecting..." : "JOIN ROOM"}
+        </Button>
       </Stack>
     );
   }
 
-  // --- editor screen ---
+  // --- Editor screen ---
   return (
-    <Stack
-      sx={{
-        display: "flex",
-        flexDirection: "column",
-        height: "100vh",
-        pb: 7,
-      }}
-    >
-      {/* Header */}
-      <Box
-        sx={{
-          p: 1.5,
-          borderBottom: "1px solid",
-          borderColor: "divider",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          bgcolor: "background.paper",
-          flexShrink: 0,
-        }}
+    <Stack sx={{ pb: 2 }}>
+      <AppBar
+        position="static"
+        color="inherit"
+        elevation={0}
+        sx={{ borderBottom: "1px solid", borderColor: "divider" }}
       >
-        <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+        <Toolbar variant="dense">
           <Chip
             size="small"
             icon={<GroupIcon />}
-            label={`${peers.length + 1} online`}
+            label={`${peers.length + 1}`}
             color={connected ? "success" : "default"}
             variant="outlined"
+            sx={{ mr: 1 }}
           />
-          <Chip
-            size="small"
-            label={connected ? "Connected" : "Connecting..."}
-            color={connected ? "success" : "warning"}
-          />
-          <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+          <Box sx={{ display: "flex", alignItems: "center", mr: 1 }}>
             <Typography variant="body2" noWrap sx={{ maxWidth: 120 }}>
-              {roomName}
+              {currentRoom}
             </Typography>
-            <IconButton size="small" onClick={handleCopyRoomName}>
-              <CopyIcon fontSize="small" />
-            </IconButton>
+            <Tooltip title="Copy room name">
+              <IconButton size="small" onClick={handleCopyRoomName}>
+                <CopyIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+            {userName && (
+              <Tooltip title={`${userName} (You)`} placement="bottom">
+                <Avatar
+                  sx={{
+                    width: 28,
+                    height: 28,
+                    bgcolor: "#666",
+                    fontSize: 12,
+                    ml: 0.5,
+                  }}
+                >
+                  {userName.charAt(0).toUpperCase()}
+                </Avatar>
+              </Tooltip>
+            )}
           </Box>
-        </Box>
-        <Button
-          size="small"
-          color="error"
-          variant="outlined"
-          startIcon={<StopIcon />}
-          onClick={handleLeaveRoom}
-        >
-          Leave
-        </Button>
-      </Box>
-
-      {/* Peers */}
-      {peers.length > 0 && (
-        <Box
-          sx={{
-            px: 1.5,
-            py: 0.5,
-            borderBottom: "1px solid",
-            borderColor: "divider",
-            bgcolor: "background.paper",
-            flexShrink: 0,
-          }}
-        >
-          <List dense disablePadding>
-            {peers.map((peer) => (
-              <ListItem key={peer.id} disablePadding sx={{ py: 0.25 }}>
-                <ListItemAvatar sx={{ minWidth: 36 }}>
+          <Box sx={{ flexGrow: 1 }} />
+          {peers.length > 0 && (
+            <AvatarGroup
+              max={4}
+              slotProps={{
+                additionalAvatar: {
+                  sx: { width: 28, height: 28, fontSize: 12 },
+                  children: <PersonIcon sx={{ fontSize: 12 }} />,
+                },
+              }}
+            >
+              {peers.map((peer) => (
+                <Tooltip key={peer.id} title={peer.name} placement="bottom">
                   <Avatar
                     sx={{
-                      width: 24,
-                      height: 24,
+                      width: 28,
+                      height: 28,
                       bgcolor: peer.color,
                       fontSize: 12,
                     }}
                   >
                     {peer.name.charAt(0).toUpperCase()}
                   </Avatar>
-                </ListItemAvatar>
-                <ListItemText
-                  primary={peer.name}
-                  slotProps={{ primary: { variant: "body2" } }}
-                />
-              </ListItem>
-            ))}
-          </List>
-        </Box>
-      )}
+                </Tooltip>
+              ))}
+            </AvatarGroup>
+          )}
+          <Button
+            size="small"
+            color="error"
+            variant="outlined"
+            startIcon={<StopIcon />}
+            onClick={leaveRoom}
+          >
+            Leave
+          </Button>
+        </Toolbar>
+      </AppBar>
 
       {/* Editor */}
       <Box sx={{ flexGrow: 1, overflow: "hidden" }}>
         <CodeMirror
+          key={editorKey}
           extensions={editorExtensions}
           height="100%"
           theme="light"
