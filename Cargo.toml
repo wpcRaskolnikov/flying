@@ -44,6 +44,7 @@ futures = "0.3"
 tokio-util = { version = "0.7", features = ["compat"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+libc = "0.2"
 
 # The profile that 'dist' will build with
 [profile.dist]

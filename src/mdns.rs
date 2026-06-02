@@ -1,6 +1,30 @@
 pub use mdns_sd::{ServiceDaemon, ServiceInfo};
 use std::{net::IpAddr, time::Duration};
 
+fn get_hostname() -> anyhow::Result<String> {
+    #[cfg(target_os = "android")]
+    {
+        const PROP_VALUE_MAX: usize = 92;
+        let mut buf = [0u8; PROP_VALUE_MAX];
+        let len = unsafe {
+            libc::__system_property_get(
+                c"ro.product.model".as_ptr(),
+                buf.as_mut_ptr() as *mut libc::c_char,
+            )
+        };
+        if len == 0 {
+            anyhow::bail!("failed to get ro.product.model");
+        }
+        let nul_pos = buf.iter().position(|&b| b == 0).unwrap_or(len);
+        Ok(String::from_utf8_lossy(&buf[..nul_pos]).to_string())
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        Ok(hostname::get()?.to_string_lossy().to_string())
+    }
+}
+
 const SERVICE_TYPE: &str = "_flying._tcp.local.";
 const SERVICE_NAME: &str = "flying-transfer";
 const COLLAB_SERVICE_TYPE: &str = "_flying-collab._tcp.local.";
@@ -31,7 +55,7 @@ impl std::fmt::Display for ServiceType {
 pub fn advertise_service(port: u16) -> anyhow::Result<ServiceDaemon> {
     let mdns = ServiceDaemon::new()?;
 
-    let hostname = hostname::get()?.to_string_lossy().to_string();
+    let hostname = get_hostname()?;
     let instance_name = format!("{}-{}", hostname, SERVICE_NAME);
     let service_hostname = format!("{}.local.", hostname);
 
@@ -79,7 +103,7 @@ fn is_valid_ip(ip_addr: IpAddr) -> bool {
 pub fn advertise_collab_service(port: u16) -> anyhow::Result<ServiceDaemon> {
     let mdns = ServiceDaemon::new()?;
 
-    let hostname = hostname::get()?.to_string_lossy().to_string();
+    let hostname = get_hostname()?;
     let instance_name = format!("{}-{}", hostname, COLLAB_SERVICE_NAME);
     let service_hostname = format!("{}.local.", hostname);
 
