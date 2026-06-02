@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useMemo } from "react";
 import {
   Box,
   Stack,
@@ -22,9 +22,9 @@ import {
 } from "@mui/material";
 import {
   Group as GroupIcon,
-  ContentCopy as CopyIcon,
   Stop as StopIcon,
   Wifi as WifiIcon,
+  ContentCopy as CopyIcon,
   Autorenew as AutorenewIcon,
   Person as PersonIcon,
 } from "@mui/icons-material";
@@ -60,156 +60,95 @@ function pickColor() {
 
 const DEFAULT_PORT = 18080;
 
-function useYjsCollab() {
-  const { showSnackbar } = useSnackbar();
+interface SessionConfig {
+  serverUrl: string;
+  room: string;
+  name: string;
+}
 
-  const ydocRef = useRef<Y.Doc | null>(null);
-  const providerRef = useRef<WebsocketProvider | null>(null);
-  const undoRef = useRef<Y.UndoManager | null>(null);
-  const collabExtRef = useRef<any>(null);
-  const handleStatusRef = useRef<((data: { status: string }) => void) | null>(
-    null,
-  );
-  const updatePeersRef = useRef<(() => void) | null>(null);
+function useYjsCollab(session: SessionConfig | null) {
+  const { showSnackbar } = useSnackbar();
 
   const [peers, setPeers] = useState<Peer[]>([]);
   const [connected, setConnected] = useState(false);
   const [connecting, setConnecting] = useState(false);
-  const [currentRoom, setCurrentRoom] = useState("");
-  const [version, setVersion] = useState(0);
-  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [collabExt, setCollabExt] = useState<ReturnType<typeof yCollab> | null>(
+    null,
+  );
+  const extensions = useMemo(() => (collabExt ? [collabExt] : []), [collabExt]);
 
-  const clearConnectTimeout = useCallback(() => {
-    if (timeoutRef.current) {
-      clearTimeout(timeoutRef.current);
-      timeoutRef.current = null;
-    }
-  }, []);
-
-  const cleanup = useCallback(() => {
-    clearConnectTimeout();
-    const provider = providerRef.current;
-    if (provider) {
-      if (handleStatusRef.current)
-        provider.off("status", handleStatusRef.current);
-      if (updatePeersRef.current)
-        provider.awareness.off("change", updatePeersRef.current);
-      provider.destroy();
-      providerRef.current = null;
-    }
-    undoRef.current?.destroy();
-    undoRef.current = null;
-    ydocRef.current?.destroy();
-    ydocRef.current = null;
-    collabExtRef.current = null;
-    handleStatusRef.current = null;
-    updatePeersRef.current = null;
+  useEffect(() => {
+    // Reset UI state on every session change (including disconnect).
+    setCollabExt(null);
     setPeers([]);
     setConnected(false);
     setConnecting(false);
-    setCurrentRoom("");
-  }, [clearConnectTimeout]);
 
-  // Unmount cleanup
-  useEffect(() => {
-    return () => {
-      providerRef.current?.destroy();
-      undoRef.current?.destroy();
-      ydocRef.current?.destroy();
-    };
-  }, []);
+    // No active session — nothing to connect to.
+    if (!session) return;
 
-  const joinRoom = useCallback(
-    (serverUrl: string, room: string, name: string) => {
-      // Kill any existing connection before creating a new one
-      cleanup();
+    const { serverUrl, room, name } = session;
+    setConnecting(true);
 
-      const ydoc = new Y.Doc();
-      ydocRef.current = ydoc;
+    const ydoc = new Y.Doc();
+    const ytext = ydoc.getText("codemirror");
+    const undoManager = new Y.UndoManager(ytext);
 
-      const ytext = ydoc.getText("codemirror");
-      const undoManager = new Y.UndoManager(ytext);
-      undoRef.current = undoManager;
+    const uc = pickColor();
+    const provider = new WebsocketProvider(serverUrl, room, ydoc);
+    provider.awareness.setLocalStateField("user", {
+      name,
+      color: uc.color,
+      colorLight: uc.light,
+    });
 
-      const uc = pickColor();
-      const provider = new WebsocketProvider(serverUrl, room, ydoc);
-      providerRef.current = provider;
+    const ext = yCollab(ytext, provider.awareness, { undoManager });
+    setCollabExt(ext);
 
-      provider.awareness.setLocalStateField("user", {
-        name,
-        color: uc.color,
-        colorLight: uc.light,
-      });
-
-      collabExtRef.current = yCollab(ytext, provider.awareness, {
-        undoManager,
-      });
-
-      const updatePeers = () => {
-        const states = provider.awareness.getStates();
-        const list: Peer[] = [];
-        const localId = provider.awareness.clientID;
-        states.forEach((state: any, clientId: number) => {
-          if (clientId !== localId) {
-            const u = state.user || { name: "Anonymous", color: "#999" };
-            list.push({ id: clientId, color: u.color, name: u.name });
-          }
-        });
-        setPeers(list);
-      };
-      updatePeersRef.current = updatePeers;
-
-      const handleStatus = ({ status }: { status: string }) => {
-        if (status === "connected") {
-          clearConnectTimeout();
-          setConnected(true);
-          setConnecting(false);
-          setCurrentRoom(room);
-          showSnackbar(`Joined "${room}"`, "success");
-        } else if (status === "disconnected") {
-          setConnected(false);
-          showSnackbar("Connection lost, retrying...", "error");
+    const updatePeers = () => {
+      const states = provider.awareness.getStates();
+      const list: Peer[] = [];
+      const localId = provider.awareness.clientID;
+      states.forEach((state: any, clientId: number) => {
+        if (clientId !== localId) {
+          const u = state.user || { name: "Anonymous", color: "#999" };
+          list.push({ id: clientId, color: u.color, name: u.name });
         }
-      };
-      handleStatusRef.current = handleStatus;
+      });
+      setPeers(list);
+    };
 
-      provider.on("status", handleStatus);
-      provider.awareness.on("change", updatePeers);
-      updatePeers();
+    const handleStatus = ({ status }: { status: string }) => {
+      clearTimeout(timeout);
+      if (status === "connected") {
+        setConnected(true);
+        setConnecting(false);
+        showSnackbar(`Joined "${room}"`, "success");
+      } else if (status === "disconnected") {
+        setConnected(false);
+        showSnackbar("Connection lost, retrying...", "error");
+      }
+    };
 
-      // Timeout if connection doesn't succeed within 5s
-      setConnecting(true);
-      timeoutRef.current = setTimeout(() => {
-        showSnackbar(`Connection to ${serverUrl} timed out`, "error");
-        cleanup();
-      }, 5000);
+    const timeout = setTimeout(() => {
+      showSnackbar(`Connection to ${serverUrl} timed out`, "error");
+      provider.destroy();
+    }, 5000);
+    provider.on("status", handleStatus);
+    provider.awareness.on("change", updatePeers);
+    updatePeers();
 
-      // Bump version to force CodeMirror remount with new collab extension
-      setVersion((v) => v + 1);
-    },
-    [cleanup],
-  );
+    return () => {
+      clearTimeout(timeout);
+      provider.off("status", handleStatus);
+      provider.awareness.off("change", updatePeers);
+      provider.destroy();
+      undoManager.destroy();
+      ydoc.destroy();
+    };
+  }, [session, showSnackbar]);
 
-  const leaveRoom = useCallback(() => {
-    cleanup();
-    showSnackbar("Left the room", "info");
-  }, [cleanup]);
-
-  const editorExtensions = useMemo(
-    () => (collabExtRef.current ? [collabExtRef.current] : []),
-    [version],
-  );
-
-  return {
-    peers,
-    connected,
-    connecting,
-    currentRoom,
-    editorExtensions,
-    editorKey: version,
-    joinRoom,
-    leaveRoom,
-  };
+  return { peers, connected, connecting, extensions };
 }
 
 function CollabEditPage() {
@@ -218,20 +157,15 @@ function CollabEditPage() {
   const [userName, setUserName] = useState("");
   const [serverAddr, setServerAddr] = useState("");
   const [useWss, setUseWss] = useState(false);
+  const [activeSession, setActiveSession] = useState<SessionConfig | null>(
+    null,
+  );
   const { showSnackbar } = useSnackbar();
 
-  const {
-    peers,
-    connected,
-    connecting,
-    currentRoom,
-    editorExtensions,
-    editorKey,
-    joinRoom,
-    leaveRoom,
-  } = useYjsCollab();
-
-  const inRoom = currentRoom !== "";
+  const { peers, connected, connecting, extensions } =
+    useYjsCollab(activeSession);
+  const currentRoom = activeSession?.room ?? "";
+  const inRoom = activeSession !== null;
 
   const handleToggleServer = async () => {
     if (isServerRunning) {
@@ -271,11 +205,16 @@ function CollabEditPage() {
     }
 
     const protocol = useWss ? "wss" : "ws";
-    joinRoom(
-      `${protocol}://${serverAddr.trim()}`,
-      roomName.trim(),
-      userName.trim(),
-    );
+    setActiveSession({
+      serverUrl: `${protocol}://${serverAddr.trim()}`,
+      room: roomName.trim(),
+      name: userName.trim(),
+    });
+  };
+
+  const handleLeaveRoom = () => {
+    setActiveSession(null);
+    showSnackbar("Left the room", "info");
   };
 
   const handleCopyRoomName = async () => {
@@ -373,7 +312,13 @@ function CollabEditPage() {
         <Button
           variant="contained"
           size="large"
-          startIcon={connecting ? <CircularProgress size={20} color="inherit" /> : <WifiIcon />}
+          startIcon={
+            connecting ? (
+              <CircularProgress size={20} color="inherit" />
+            ) : (
+              <WifiIcon />
+            )
+          }
           onClick={handleJoinRoom}
           fullWidth
           disabled={connecting}
@@ -411,8 +356,11 @@ function CollabEditPage() {
                 <CopyIcon fontSize="small" />
               </IconButton>
             </Tooltip>
-            {userName && (
-              <Tooltip title={`${userName} (You)`} placement="bottom">
+            {activeSession?.name && (
+              <Tooltip
+                title={`${activeSession?.name} (You)`}
+                placement="bottom"
+              >
                 <Avatar
                   sx={{
                     width: 28,
@@ -422,7 +370,7 @@ function CollabEditPage() {
                     ml: 0.5,
                   }}
                 >
-                  {userName.charAt(0).toUpperCase()}
+                  {activeSession?.name.charAt(0).toUpperCase()}
                 </Avatar>
               </Tooltip>
             )}
@@ -459,7 +407,7 @@ function CollabEditPage() {
             color="error"
             variant="outlined"
             startIcon={<StopIcon />}
-            onClick={leaveRoom}
+            onClick={handleLeaveRoom}
           >
             Leave
           </Button>
@@ -469,8 +417,8 @@ function CollabEditPage() {
       {/* Editor */}
       <Box sx={{ flexGrow: 1, overflow: "hidden" }}>
         <CodeMirror
-          key={editorKey}
-          extensions={editorExtensions}
+          key={currentRoom}
+          extensions={extensions}
           height="100%"
           theme="light"
           basicSetup

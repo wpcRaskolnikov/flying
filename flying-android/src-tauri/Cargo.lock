@@ -1556,6 +1556,7 @@ dependencies = [
  "hostname",
  "humansize",
  "humantime",
+ "libc",
  "libp2p",
  "libp2p-stream",
  "mdns-sd",
@@ -1571,7 +1572,7 @@ dependencies = [
 
 [[package]]
 name = "flying-android"
-version = "0.7.9"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "flying",
