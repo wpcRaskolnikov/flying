@@ -15,7 +15,7 @@ fn get_hostname() -> anyhow::Result<String> {
         if len == 0 {
             anyhow::bail!("failed to get ro.product.model");
         }
-        let nul_pos = buf.iter().position(|&b| b == 0).unwrap_or(len);
+        let nul_pos = buf.iter().position(|&b| b == 0).unwrap_or(len as usize);
         Ok(String::from_utf8_lossy(&buf[..nul_pos]).to_string())
     }
 
