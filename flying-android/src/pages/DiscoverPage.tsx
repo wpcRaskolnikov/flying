@@ -57,7 +57,7 @@ function DiscoverPage() {
   const handleCopyIp = async (host: DiscoveredHost) => {
     const ipPart = isIpv6(host.ip) ? `[${host.ip}]` : host.ip;
     const text =
-      host.serviceType === "collab" ? `${ipPart}:${host.port}` : host.ip;
+      host.serviceType.includes("collab") ? `${ipPart}:${host.port}` : host.ip;
     await writeText(text);
     showSnackbar(`Copied ${text}`);
   };
@@ -121,7 +121,7 @@ function DiscoverPage() {
                 primary={
                   <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
                     {host.name || "Unknown Host"}
-                    {host.serviceType === "collab" ? (
+                    {host.serviceType.includes("collab") ? (
                       <EditIcon fontSize="small" color="primary" />
                     ) : (
                       <FolderIcon fontSize="small" color="primary" />
@@ -129,7 +129,7 @@ function DiscoverPage() {
                   </Box>
                 }
                 secondary={
-                  host.serviceType === "collab"
+                  host.serviceType.includes("collab")
                     ? `${isIpv6(host.ip) ? `[${host.ip}]` : host.ip}:${host.port}`
                     : host.ip
                 }
