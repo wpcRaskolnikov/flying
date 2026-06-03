@@ -1,4 +1,4 @@
-use crate::utils::{TransferState, TransferStatusPayload};
+use crate::utils::{SendState, TransferStatusPayload};
 
 use flying::mdns::ServiceDaemon;
 
@@ -12,6 +12,7 @@ use tauri::Emitter;
 
 use serde::{Deserialize, Serialize};
 
+use futures_util::FutureExt;
 use tokio::sync::{mpsc, oneshot};
 
 #[cfg(target_os = "android")]
@@ -22,7 +23,11 @@ use {
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "mode", rename_all = "snake_case")]
+#[serde(
+    tag = "mode",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum ConnectionConfig {
     Listen,
     Connect {
@@ -73,7 +78,7 @@ impl ConnectionConfig {
 }
 
 #[tauri::command]
-pub async fn cancel_send(state: tauri::State<'_, TransferState>) -> Result<(), String> {
+pub async fn cancel_send(state: tauri::State<'_, SendState>) -> Result<(), String> {
     if let Some(mdns) = state.mdns_daemon.lock().unwrap().take() {
         let _ = mdns.shutdown();
     }
@@ -109,12 +114,13 @@ pub async fn send_file(
     port: u16,
     _app: tauri::AppHandle,
     window: tauri::Window,
-    state: tauri::State<'_, TransferState>,
+    state: tauri::State<'_, SendState>,
 ) -> Result<(), String> {
     let mode = config.to_flying_mode()?;
 
     let (abort_handle, abort_registration) = oneshot::channel::<()>();
-    let (mdns_tx, mut mdns_rx) = oneshot::channel::<ServiceDaemon>();
+    let (mdns_tx, mdns_rx) = oneshot::channel::<ServiceDaemon>();
+    let mut mdns_rx = mdns_rx.fuse();
     let (peer_id_tx, mut peer_id_rx) = mpsc::channel(1);
     let (progress_tx, mut progress_rx) = mpsc::channel(32);
 
@@ -149,7 +155,10 @@ pub async fn send_file(
                     Some(peer_id_tx),
                     Some(mdns_tx),
                 )),
-                None => Box::pin(async move { Err("Failed to parse URI".to_string()) }),
+                None => Box::pin(async move {
+                    let _ = mdns_tx;
+                    Err("Failed to parse URI".to_string())
+                }),
             }
         };
 

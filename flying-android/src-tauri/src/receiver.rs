@@ -1,5 +1,5 @@
 use crate::sender::ConnectionConfig;
-use crate::utils::{TransferState, TransferStatusPayload};
+use crate::utils::{ReceiveState, TransferStatusPayload};
 
 use tauri::Emitter;
 
@@ -10,7 +10,7 @@ use tokio::sync::{mpsc, oneshot};
 use futures_util::FutureExt;
 
 #[tauri::command]
-pub async fn cancel_receive(state: tauri::State<'_, TransferState>) -> Result<(), String> {
+pub async fn cancel_receive(state: tauri::State<'_, ReceiveState>) -> Result<(), String> {
     if let Some(mdns) = state.mdns_daemon.lock().unwrap().take() {
         let _ = mdns.shutdown();
     }
@@ -45,7 +45,7 @@ pub async fn receive_file(
     output_dir_uri: String,
     port: u16,
     window: tauri::Window,
-    state: tauri::State<'_, TransferState>,
+    state: tauri::State<'_, ReceiveState>,
 ) -> Result<(), String> {
     let mode = config.to_flying_mode()?;
 

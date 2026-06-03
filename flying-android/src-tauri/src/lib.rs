@@ -5,7 +5,7 @@ mod receiver;
 mod sender;
 mod utils;
 
-use utils::{CollabServerState, TransferState};
+use utils::{CollabServerState, ReceiveState, SendState};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -15,7 +15,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_android_fs::init())
-        .manage(TransferState::default())
+        .manage(SendState::default())
+        .manage(ReceiveState::default())
         .manage(CollabServerState::default())
         .invoke_handler(tauri::generate_handler![
             discovery::discover_hosts,

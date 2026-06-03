@@ -194,7 +194,13 @@ impl Room {
 }
 
 #[derive(Default, Clone)]
-pub struct TransferState {
+pub struct SendState {
+    pub abort_handle: Arc<StdMutex<Option<OneshotSender<()>>>>,
+    pub mdns_daemon: Arc<StdMutex<Option<ServiceDaemon>>>,
+}
+
+#[derive(Default, Clone)]
+pub struct ReceiveState {
     pub abort_handle: Arc<StdMutex<Option<OneshotSender<()>>>>,
     pub mdns_daemon: Arc<StdMutex<Option<ServiceDaemon>>>,
 }
