@@ -2,9 +2,11 @@ use crate::utils::{TransferState, TransferStatusPayload};
 
 use flying::mdns::ServiceDaemon;
 
-use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
+
+#[cfg(not(target_os = "android"))]
+use std::path::PathBuf;
 
 use tauri::Emitter;
 
@@ -130,14 +132,16 @@ pub async fn send_file(
         emit_status(&window, initial_status, 0, None, None);
 
         #[cfg(target_os = "android")]
+        let android_uri: Option<FileUri> = FileUri::from_json_str(&file_uri).ok();
+
+        #[cfg(target_os = "android")]
         let transfer_fut: Pin<
             Box<dyn std::future::Future<Output = Result<(), String>> + Send>,
         > = {
-            match FileUri::from_json_str(&file_uri).map_err(|e| format!("Failed to parse URI: {e}"))
-            {
-                Ok(uri) => Box::pin(run_send_android(
+            match android_uri {
+                Some(ref uri) => Box::pin(run_send_android(
                     &_app,
-                    &uri,
+                    uri,
                     &password,
                     mode,
                     port,
@@ -145,7 +149,7 @@ pub async fn send_file(
                     Some(peer_id_tx),
                     Some(mdns_tx),
                 )),
-                Err(e) => Box::pin(async move { Err(e) }),
+                None => Box::pin(async move { Err("Failed to parse URI".to_string()) }),
             }
         };
 
