@@ -1,3 +1,8 @@
+export type PickedEntity = {
+  pathOrUri: string;
+  name: string;
+};
+
 export type TransferStatusPayload = {
   status: "Ready" | "Sending" | "Completed" | "Error";
   progress: number;

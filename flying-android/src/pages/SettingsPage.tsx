@@ -13,6 +13,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { useAtom } from "jotai";
 import { portAtom } from "../store";
 import { useSnackbar } from "../hooks";
+import type { PickedEntity } from "../types";
 
 function SettingsPage() {
   const [defaultFolder, setDefaultFolder] = useState<string>("");
@@ -37,10 +38,9 @@ function SettingsPage() {
 
   const handleFolderSelect = async () => {
     try {
-      const result = await invoke<[string, string] | null>("pick_folder");
+      const result = await invoke<PickedEntity | null>("pick_folder");
       if (result) {
-        const [uri, _name] = result;
-        setDefaultFolder(uri);
+        setDefaultFolder(result.pathOrUri);
         showSnackbar("Default folder updated", "success");
       }
     } catch (error) {

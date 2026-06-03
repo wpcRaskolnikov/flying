@@ -1,14 +1,13 @@
 use crate::sender::ConnectionConfig;
 use crate::utils::{TransferState, TransferStatusPayload};
 
-use flying::mdns::ServiceDaemon;
-
 use tauri::Emitter;
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use tokio::sync::{mpsc, oneshot};
+
+use futures_util::FutureExt;
 
 #[tauri::command]
 pub async fn cancel_receive(state: tauri::State<'_, TransferState>) -> Result<(), String> {
@@ -17,10 +16,26 @@ pub async fn cancel_receive(state: tauri::State<'_, TransferState>) -> Result<()
     }
     if let Some(abort_sender) = state.abort_handle.lock().unwrap().take() {
         let _ = abort_sender.send(());
-        Ok(())
-    } else {
-        Err("No active receive transfer to cancel".to_string())
     }
+    Ok(())
+}
+
+fn emit_status(
+    window: &tauri::Window,
+    status: &str,
+    progress: u8,
+    message: Option<String>,
+    peer_id: Option<String>,
+) {
+    let _ = window.emit(
+        "receive-status-update",
+        TransferStatusPayload {
+            status: status.to_string(),
+            progress,
+            message,
+            peer_id,
+        },
+    );
 }
 
 #[tauri::command]
@@ -34,20 +49,20 @@ pub async fn receive_file(
 ) -> Result<(), String> {
     let mode = config.to_flying_mode()?;
 
-    let (abort_handle, abort_registration) = oneshot::channel::<()>();
-    let (mdns_tx, mdns_rx) = oneshot::channel::<ServiceDaemon>();
+    let (abort_handle, mut abort_registration) = oneshot::channel::<()>();
+    let (mdns_tx, mdns_rx) = oneshot::channel::<flying::mdns::ServiceDaemon>();
+    let (progress_tx, mut progress_rx) = mpsc::channel(32);
+    let (peer_id_tx, mut peer_id_rx) = mpsc::channel(1);
 
-    let mdns_daemon_mutex = Arc::clone(&state.mdns_daemon);
-    tokio::spawn(async move {
-        if let Ok(daemon) = mdns_rx.await {
-            let mut state = mdns_daemon_mutex.lock().unwrap();
-            *state = Some(daemon);
-        }
-    });
+    let state_mdns = state.mdns_daemon.clone();
+    let state_abort = state.abort_handle.clone();
+
+    let mut mdns_rx = mdns_rx.fuse();
+
+    *state.abort_handle.lock().unwrap() = Some(abort_handle);
 
     tokio::spawn(async move {
         let output_dir;
-
         #[cfg(target_os = "android")]
         {
             output_dir = PathBuf::from("/storage/emulated/0/Download");
@@ -57,103 +72,68 @@ pub async fn receive_file(
             output_dir = PathBuf::from(output_dir_uri);
         }
 
-        let (progress_tx, mut progress_rx) = mpsc::channel(32);
-        let window_clone = window.clone();
-        tokio::spawn(async move {
-            while let Some(percent) = progress_rx.recv().await {
-                let _ = window_clone.emit(
-                    "receive-status-update",
-                    TransferStatusPayload {
-                        status: "Sending".to_string(),
-                        progress: percent,
-                        message: None,
-                        peer_id: None,
-                    },
-                );
-            }
-        });
+        let initial_status = match &mode {
+            flying::ConnectionMode::Listen => "Ready",
+            _ => "Sending",
+        };
+        emit_status(&window, initial_status, 0, None, None);
 
-        // Create peer ID channel for receiving peer ID
-        let (peer_id_tx, mut peer_id_rx) = mpsc::channel(1);
-        let window_peer_id = window.clone();
-        tokio::spawn(async move {
-            if let Some(peer_id) = peer_id_rx.recv().await {
-                let _ = window_peer_id.emit(
-                    "receive-status-update",
-                    TransferStatusPayload {
-                        status: "Ready".to_string(),
-                        progress: 0,
-                        message: None,
-                        peer_id: Some(peer_id),
-                    },
-                );
-            }
-        });
+        let transfer_fut = flying::run_receiver(
+            &output_dir,
+            &password,
+            mode,
+            port,
+            Some(progress_tx),
+            Some(peer_id_tx),
+            Some(mdns_tx),
+        );
+        tokio::pin!(transfer_fut);
 
-        // Emit initial status: Ready for listen modes, Sending for others
-        match &mode {
-            flying::ConnectionMode::Listen => {
-                let _ = window.emit(
-                    "receive-status-update",
-                    TransferStatusPayload {
-                        status: "Ready".to_string(),
-                        progress: 0,
-                        message: None,
-                        peer_id: None,
-                    },
-                );
-            }
-            _ => {
-                let _ = window.emit(
-                    "receive-status-update",
-                    TransferStatusPayload {
-                        status: "Sending".to_string(),
-                        progress: 0,
-                        message: None,
-                        peer_id: None,
-                    },
-                );
+        let final_result: Result<(), String>;
+
+        loop {
+            tokio::select! {
+                // Progress updates
+                msg = progress_rx.recv() => {
+                    if let Some(percent) = msg {
+                        emit_status(&window, "Sending", percent, None, None);
+                    }
+                }
+                // Peer ID received
+                msg = peer_id_rx.recv() => {
+                    if let Some(peer_id) = msg {
+                        emit_status(&window, "Ready", 0, None, Some(peer_id));
+                    }
+                }
+                // Transfer completes
+                res = &mut transfer_fut => {
+                    final_result = res.map_err(|e| format!("Receive error: {e}"));
+                    break;
+                }
+                // User cancels
+                _ = &mut abort_registration => {
+                    final_result = Err("Transfer cancelled".to_string());
+                    break;
+                }
+                // Capture mDNS daemon from oneshot
+                Ok(daemon) = &mut mdns_rx => {
+                    *state_mdns.lock().unwrap() = Some(daemon);
+                }
             }
         }
 
-        // Check for cancellation or run transfer
-        let result = tokio::select! {
-            _ = abort_registration => {
-                Err("Transfer cancelled".to_string())
-            }
-            result = flying::run_receiver(&output_dir, &password, mode, port, Some(progress_tx), Some(peer_id_tx), Some(mdns_tx)) => {
-                result.map_err(|e| format!("Receive error: {}", e))
-            }
-        };
+        // Clean up state
+        *state_abort.lock().unwrap() = None;
+        if let Some(mdns) = state_mdns.lock().unwrap().take() {
+            let _ = mdns.shutdown();
+        }
 
-        match result {
-            Ok(_) => {
-                let _ = window.emit(
-                    "receive-status-update",
-                    TransferStatusPayload {
-                        status: "Completed".to_string(),
-                        progress: 100,
-                        message: None,
-                        peer_id: None,
-                    },
-                );
-            }
-            Err(e) => {
-                let _ = window.emit(
-                    "receive-status-update",
-                    TransferStatusPayload {
-                        status: "Error".to_string(),
-                        progress: 0,
-                        message: Some(e),
-                        peer_id: None,
-                    },
-                );
-            }
+        // Emit final status
+        match final_result {
+            Ok(_) => emit_status(&window, "Completed", 100, None, None),
+            Err(e) => emit_status(&window, "Error", 0, Some(e), None),
         }
     });
-
-    // Store the abort sender
-    *state.abort_handle.lock().unwrap() = Some(abort_handle);
 
     Ok(())
 }

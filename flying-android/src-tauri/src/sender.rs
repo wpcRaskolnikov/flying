@@ -2,6 +2,8 @@ use crate::utils::{TransferState, TransferStatusPayload};
 
 use flying::mdns::ServiceDaemon;
 
+use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use tauri::Emitter;
@@ -75,10 +77,26 @@ pub async fn cancel_send(state: tauri::State<'_, TransferState>) -> Result<(), S
     }
     if let Some(abort_sender) = state.abort_handle.lock().unwrap().take() {
         let _ = abort_sender.send(());
-        Ok(())
-    } else {
-        Err("No active send transfer to cancel".to_string())
     }
+    Ok(())
+}
+
+fn emit_status(
+    window: &tauri::Window,
+    status: &str,
+    progress: u8,
+    message: Option<String>,
+    peer_id: Option<String>,
+) {
+    let _ = window.emit(
+        "send-status-update",
+        TransferStatusPayload {
+            status: status.to_string(),
+            progress,
+            message,
+            peer_id,
+        },
+    );
 }
 
 #[tauri::command]
@@ -94,95 +112,30 @@ pub async fn send_file(
     let mode = config.to_flying_mode()?;
 
     let (abort_handle, abort_registration) = oneshot::channel::<()>();
-    let (mdns_tx, mdns_rx) = oneshot::channel::<ServiceDaemon>();
+    let (mdns_tx, mut mdns_rx) = oneshot::channel::<ServiceDaemon>();
     let (peer_id_tx, mut peer_id_rx) = mpsc::channel(1);
+    let (progress_tx, mut progress_rx) = mpsc::channel(32);
 
-    let mdns_daemon_mutex = Arc::clone(&state.mdns_daemon);
-    tokio::spawn(async move {
-        if let Ok(daemon) = mdns_rx.await {
-            let mut state = mdns_daemon_mutex.lock().unwrap();
-            *state = Some(daemon);
-        }
-    });
+    let state_mdns = Arc::clone(&state.mdns_daemon);
+    let state_abort = Arc::clone(&state.abort_handle);
+
+    // Store abort handle before spawning
+    *state.abort_handle.lock().unwrap() = Some(abort_handle);
 
     tokio::spawn(async move {
-        // Emit initial status and wait for connection if needed
-        match &mode {
-            flying::ConnectionMode::Listen => {
-                // Emit Ready (waiting for peer to connect)
-                let _ = window.emit(
-                    "send-status-update",
-                    TransferStatusPayload {
-                        status: "Ready".to_string(),
-                        progress: 0,
-                        message: None,
-                        peer_id: None,
-                    },
-                );
-            }
-            flying::ConnectionMode::RelayListen { .. }
-            | flying::ConnectionMode::RelayDial { .. } => {
-                if let Some(peer_id) = peer_id_rx.recv().await {
-                    let _ = window.emit(
-                        "send-status-update",
-                        TransferStatusPayload {
-                            status: "Ready".to_string(),
-                            progress: 0,
-                            message: None,
-                            peer_id: Some(peer_id),
-                        },
-                    );
-                }
-                let _ = window.emit(
-                    "send-status-update",
-                    TransferStatusPayload {
-                        status: "Sending".to_string(),
-                        progress: 0,
-                        message: None,
-                        peer_id: None,
-                    },
-                );
-            }
-            _ => {
-                let _ = window.emit(
-                    "send-status-update",
-                    TransferStatusPayload {
-                        status: "Sending".to_string(),
-                        progress: 0,
-                        message: None,
-                        peer_id: None,
-                    },
-                );
-            }
-        }
+        let initial_status = match &mode {
+            flying::ConnectionMode::Listen => "Ready",
+            _ => "Sending",
+        };
+        emit_status(&window, initial_status, 0, None, None);
 
         #[cfg(target_os = "android")]
-        let result: Result<(), String> = async {
-            let uri = FileUri::from_json_str(&file_uri)
-                .map_err(|e| format!("Failed to parse URI: {}", e))?;
-
-            let (progress_tx, mut progress_rx) = mpsc::channel(32);
-            let window_clone = window.clone();
-
-            tokio::spawn(async move {
-                while let Some(percent) = progress_rx.recv().await {
-                    let _ = window_clone.emit(
-                        "send-status-update",
-                        TransferStatusPayload {
-                            status: "Sending".to_string(),
-                            progress: percent,
-                            message: None,
-                            peer_id: None,
-                        },
-                    );
-                }
-            });
-
-            tokio::select! {
-                _ = abort_registration => {
-                    Err("Transfer cancelled".to_string())
-                }
-                result = run_send_android(
+        let transfer_fut: Pin<
+            Box<dyn std::future::Future<Output = Result<(), String>> + Send>,
+        > = {
+            match FileUri::from_json_str(&file_uri).map_err(|e| format!("Failed to parse URI: {e}"))
+            {
+                Ok(uri) => Box::pin(run_send_android(
                     &_app,
                     &uri,
                     &password,
@@ -191,72 +144,72 @@ pub async fn send_file(
                     Some(progress_tx),
                     Some(peer_id_tx),
                     Some(mdns_tx),
-                ) => {
-                    result
-                }
+                )),
+                Err(e) => Box::pin(async move { Err(e) }),
             }
-        }
-        .await;
+        };
 
         #[cfg(not(target_os = "android"))]
-        let result: Result<(), String> = async {
-            let file_path = std::path::PathBuf::from(&file_uri);
+        let transfer_fut: Pin<
+            Box<dyn std::future::Future<Output = Result<(), String>> + Send>,
+        > = {
+            let file_path = PathBuf::from(&file_uri);
+            Box::pin(async move {
+                flying::run_sender(
+                    &file_path,
+                    &password,
+                    mode,
+                    port,
+                    Some(progress_tx),
+                    Some(peer_id_tx),
+                    Some(mdns_tx),
+                )
+                .await
+                .map_err(|e| format!("Send error: {e}"))
+            })
+        };
 
-            let (progress_tx, mut progress_rx) = mpsc::channel(32);
-            let window_clone = window.clone();
+        tokio::pin!(transfer_fut);
+        let mut abort_registration = abort_registration;
+        let final_result: Result<(), String>;
 
-            tokio::spawn(async move {
-                while let Some(percent) = progress_rx.recv().await {
-                    let _ = window_clone.emit(
-                        "send-status-update",
-                        TransferStatusPayload {
-                            status: "Sending".to_string(),
-                            progress: percent,
-                            message: None,
-                            peer_id: None,
-                        },
-                    );
-                }
-            });
-
+        loop {
             tokio::select! {
-                _ = abort_registration => {
-                    Err("Transfer cancelled".to_string())
+                msg = progress_rx.recv() => {
+                    if let Some(percent) = msg {
+                        emit_status(&window, "Sending", percent, None, None);
+                    }
                 }
-                result = flying::run_sender(&file_path, &password, mode, port, Some(progress_tx), Some(peer_id_tx), Some(mdns_tx)) => {
-                    result.map_err(|e| format!("Send error: {}", e))
+                msg = peer_id_rx.recv() => {
+                    if let Some(peer_id) = msg {
+                        emit_status(&window, "Ready", 0, None, Some(peer_id));
+                    }
+                }
+                Ok(daemon) = &mut mdns_rx => {
+                    *state_mdns.lock().unwrap() = Some(daemon);
+                }
+                res = &mut transfer_fut => {
+                    final_result = res;
+                    break;
+                }
+                _ = &mut abort_registration => {
+                    final_result = Err("Transfer cancelled".to_string());
+                    break;
                 }
             }
         }
-        .await;
 
-        match result {
-            Ok(_) => {
-                let _ = window.emit(
-                    "send-status-update",
-                    TransferStatusPayload {
-                        status: "Completed".to_string(),
-                        progress: 100,
-                        message: None,
-                        peer_id: None,
-                    },
-                );
-            }
-            Err(e) => {
-                let _ = window.emit(
-                    "send-status-update",
-                    TransferStatusPayload {
-                        status: "Error".to_string(),
-                        progress: 0,
-                        message: Some(e),
-                        peer_id: None,
-                    },
-                );
-            }
+        *state_abort.lock().unwrap() = None;
+        if let Some(mdns) = state_mdns.lock().unwrap().take() {
+            let _ = mdns.shutdown();
+        }
+
+        // Emit final status
+        match final_result {
+            Ok(_) => emit_status(&window, "Completed", 100, None, None),
+            Err(e) => emit_status(&window, "Error", 0, Some(e), None),
         }
     });
-
-    *state.abort_handle.lock().unwrap() = Some(abort_handle);
 
     Ok(())
 }
@@ -339,16 +292,10 @@ async fn send_file_android(
         .await
         .map_err(|e| format!("Failed to establish connection: {}", e))?;
 
-    // Send handshake
-    let key = flying::utils::send_handshake(
-        &mut stream,
-        flying::VERSION,
-        password,
-        &file_name,
-        false, // is_folder = false for single file
-    )
-    .await
-    .map_err(|e| format!("Handshake failed: {}", e))?;
+    let key =
+        flying::utils::send_handshake(&mut stream, flying::VERSION, password, &file_name, false)
+            .await
+            .map_err(|e| format!("Handshake failed: {}", e))?;
 
     let mut tokio_file = TokioFile::from_std(source_file);
     flying::send::send_metadata(&mut stream, &file_name, file_size)
@@ -364,7 +311,6 @@ async fn send_file_android(
             .map_err(|e| format!("Failed to send file: {}", e))?;
     }
 
-    // Wait for ACK from receiver
     let _ = stream.read_u8().await;
     let _ = stream.shutdown().await;
 
@@ -402,7 +348,6 @@ async fn send_folder_android(
             .await
             .map_err(|e| format!("Handshake failed: {}", e))?;
 
-    // Recursive send function
     async fn send_recursive(
         app: &tauri::AppHandle,
         stream: &mut Box<dyn flying::NetworkStream>,
@@ -471,13 +416,11 @@ async fn send_folder_android(
 
     send_recursive(app, &mut stream, uri, "", &key, &progress_tx).await?;
 
-    // Send end signal
     stream
         .write_u64(0)
         .await
         .map_err(|e| format!("Failed to send end signal: {}", e))?;
 
-    // Wait for ACK from receiver
     let _ = stream.read_u8().await;
     let _ = stream.shutdown().await;
 

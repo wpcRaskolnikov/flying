@@ -26,7 +26,7 @@ import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { useAtomValue } from "jotai";
 import { portAtom } from "../store";
 import { useSnackbar } from "../hooks";
-import type { ConnectionConfig, TransferStatusPayload } from "../types";
+import type { ConnectionConfig, TransferStatusPayload, PickedEntity } from "../types";
 
 function SendPage() {
   const [selectedFile, setSelectedFile] = useState<string>("");
@@ -95,11 +95,10 @@ function SendPage() {
 
   const handleFileSelect = async () => {
     try {
-      const result = await invoke<[string, string] | null>("pick_file");
+      const result = await invoke<PickedEntity | null>("pick_file");
       if (result) {
-        const [uri, filename] = result;
-        setSelectedFile(uri);
-        setSelectedFileName(filename);
+        setSelectedFile(result.pathOrUri);
+        setSelectedFileName(result.name);
       }
     } catch (error) {
       console.error("Failed to select file:", error);
@@ -109,11 +108,10 @@ function SendPage() {
 
   const handleFolderSelect = async () => {
     try {
-      const result = await invoke<[string, string] | null>("pick_folder");
+      const result = await invoke<PickedEntity | null>("pick_folder");
       if (result) {
-        const [uri, foldername] = result;
-        setSelectedFile(uri);
-        setSelectedFileName(foldername);
+        setSelectedFile(result.pathOrUri);
+        setSelectedFileName(result.name);
       }
     } catch (error) {
       console.error("Failed to select folder:", error);

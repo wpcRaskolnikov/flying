@@ -17,7 +17,10 @@ fn get_hostname() -> anyhow::Result<String> {
         let brand = if brand_len == 0 {
             String::new()
         } else {
-            let nul_pos = buf.iter().position(|&b| b == 0).unwrap_or(brand_len as usize);
+            let nul_pos = buf
+                .iter()
+                .position(|&b| b == 0)
+                .unwrap_or(brand_len as usize);
             String::from_utf8_lossy(&buf[..nul_pos]).to_string()
         };
 
@@ -31,7 +34,10 @@ fn get_hostname() -> anyhow::Result<String> {
         if model_len == 0 {
             anyhow::bail!("failed to get ro.product.model");
         }
-        let nul_pos = buf.iter().position(|&b| b == 0).unwrap_or(model_len as usize);
+        let nul_pos = buf
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(model_len as usize);
         let model = String::from_utf8_lossy(&buf[..nul_pos]).to_string();
 
         if brand.is_empty() {
@@ -56,22 +62,7 @@ pub struct DiscoveredService {
     pub hostname: String,
     pub ip: IpAddr,
     pub port: u16,
-    pub service_type: ServiceType,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ServiceType {
-    FileTransfer,
-    Collab,
-}
-
-impl std::fmt::Display for ServiceType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ServiceType::FileTransfer => write!(f, "file-transfer"),
-            ServiceType::Collab => write!(f, "collab"),
-        }
-    }
+    pub service_type: String,
 }
 
 pub fn advertise_service(port: u16) -> anyhow::Result<ServiceDaemon> {
@@ -149,23 +140,14 @@ pub fn advertise_collab_service(port: u16) -> anyhow::Result<ServiceDaemon> {
     Ok(mdns)
 }
 
-pub fn discover_services(timeout_secs: u64) -> anyhow::Result<Vec<DiscoveredService>> {
-    discover_services_by_type(timeout_secs, SERVICE_TYPE, ServiceType::FileTransfer)
-}
-
-pub fn discover_collab_services(timeout_secs: u64) -> anyhow::Result<Vec<DiscoveredService>> {
-    discover_services_by_type(timeout_secs, COLLAB_SERVICE_TYPE, ServiceType::Collab)
-}
-
 fn discover_services_by_type(
+    mdns: &ServiceDaemon,
     timeout_secs: u64,
     service_type: &str,
-    service_type_enum: ServiceType,
 ) -> anyhow::Result<Vec<DiscoveredService>> {
-    let mdns = ServiceDaemon::new()?;
     let receiver = mdns.browse(service_type)?;
 
-    println!("Scanning for {} services on the network...", service_type_enum);
+    println!("Scanning for {} services on the network...", service_type);
 
     let mut services = Vec::new();
     let start_time = std::time::Instant::now();
@@ -195,7 +177,7 @@ fn discover_services_by_type(
                         hostname: info.get_hostname().to_string(),
                         ip: ip_addr,
                         port: info.get_port(),
-                        service_type: service_type_enum,
+                        service_type: service_type.to_string(),
                     });
                 }
             }
@@ -203,6 +185,42 @@ fn discover_services_by_type(
             Err(_) => {}
         }
     }
+
+    Ok(services)
+}
+
+pub fn discover_services(timeout_secs: u64) -> anyhow::Result<Vec<DiscoveredService>> {
+    let mdns = ServiceDaemon::new()?;
+    discover_services_by_type(&mdns, timeout_secs, SERVICE_TYPE)
+}
+
+pub async fn discover_all_services(timeout_secs: u64) -> anyhow::Result<Vec<DiscoveredService>> {
+    let mdns = ServiceDaemon::new()?;
+
+    println!("Scanning for all flying services on the network concurrently...");
+
+    let mdns_clone1 = mdns.clone();
+    let mdns_clone2 = mdns.clone();
+
+    let ft_handle = tokio::task::spawn_blocking(move || {
+        discover_services_by_type(&mdns_clone1, timeout_secs, SERVICE_TYPE)
+    });
+
+    let collab_handle = tokio::task::spawn_blocking(move || {
+        discover_services_by_type(&mdns_clone2, timeout_secs, COLLAB_SERVICE_TYPE)
+    });
+
+    let (ft_res, collab_res) = tokio::join!(ft_handle, collab_handle);
+
+    let ft_services = ft_res
+        .map_err(|e| anyhow::anyhow!("File transfer task panicked: {e}"))??;
+
+    let collab_services = collab_res
+        .map_err(|e| anyhow::anyhow!("Collab task panicked: {e}"))??;
+
+    let mut services = Vec::new();
+    services.extend(ft_services);
+    services.extend(collab_services);
 
     Ok(services)
 }

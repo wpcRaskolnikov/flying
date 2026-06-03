@@ -1,8 +1,6 @@
-use flying::mdns::{discover_collab_services, discover_services};
+use flying::mdns::discover_all_services;
 
 use serde::{Deserialize, Serialize};
-
-use tokio::task::spawn_blocking;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -15,38 +13,17 @@ pub struct DiscoveredHost {
 
 #[tauri::command]
 pub async fn discover_hosts() -> Result<Vec<DiscoveredHost>, String> {
-    let transfer_handle = spawn_blocking(|| discover_services(3).map_err(|e| e.to_string()));
-    let collab_handle = spawn_blocking(|| discover_collab_services(3).map_err(|e| e.to_string()));
+    let services = discover_all_services(3)
+        .await
+        .map_err(|e| format!("Discovery failed: {e}"))?;
 
-    let (transfer_result, collab_result) = tokio::join!(transfer_handle, collab_handle);
-
-    let mut discovered = Vec::new();
-
-    match transfer_result {
-        Ok(Ok(services)) => {
-            discovered.extend(services.into_iter().map(|service| DiscoveredHost {
-                name: service.hostname,
-                ip: service.ip.to_string(),
-                port: service.port,
-                service_type: "file-transfer".to_string(),
-            }));
-        }
-        Ok(Err(e)) => eprintln!("File transfer discovery failed: {}", e),
-        Err(e) => eprintln!("File transfer discovery task panicked: {}", e),
-    }
-
-    match collab_result {
-        Ok(Ok(services)) => {
-            discovered.extend(services.into_iter().map(|service| DiscoveredHost {
-                name: service.hostname,
-                ip: service.ip.to_string(),
-                port: service.port,
-                service_type: "collab".to_string(),
-            }));
-        }
-        Ok(Err(e)) => eprintln!("Collab discovery failed: {}", e),
-        Err(e) => eprintln!("Collab discovery task panicked: {}", e),
-    }
-
-    Ok(discovered)
+    Ok(services
+        .into_iter()
+        .map(|s| DiscoveredHost {
+            name: s.hostname,
+            ip: s.ip.to_string(),
+            port: s.port,
+            service_type: s.service_type,
+        })
+        .collect())
 }

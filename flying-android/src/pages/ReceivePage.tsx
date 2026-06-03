@@ -25,7 +25,7 @@ import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { useAtomValue } from "jotai";
 import { portAtom } from "../store";
 import { useSnackbar } from "../hooks";
-import type { ConnectionConfig, TransferStatusPayload } from "../types";
+import type { ConnectionConfig, TransferStatusPayload, PickedEntity } from "../types";
 
 function ReceivePage() {
   const [outputDirUri, setOutputDirUri] = useState<string>("");
@@ -106,11 +106,10 @@ function ReceivePage() {
 
   const handlePickFolder = async () => {
     try {
-      const result = await invoke<[string, string] | null>("pick_folder");
+      const result = await invoke<PickedEntity | null>("pick_folder");
       if (result) {
-        const [uri, _name] = result;
-        setOutputDirUri(uri);
-        setOutputDirName(uri);
+        setOutputDirUri(result.pathOrUri);
+        setOutputDirName(result.name);
       }
     } catch (error) {
       console.error("Failed to pick folder:", error);
