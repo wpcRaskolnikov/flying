@@ -6,17 +6,39 @@ fn get_hostname() -> anyhow::Result<String> {
     {
         const PROP_VALUE_MAX: usize = 92;
         let mut buf = [0u8; PROP_VALUE_MAX];
-        let len = unsafe {
+
+        // Read ro.product.brand
+        let brand_len = unsafe {
+            libc::__system_property_get(
+                c"ro.product.brand".as_ptr(),
+                buf.as_mut_ptr() as *mut libc::c_char,
+            )
+        };
+        let brand = if brand_len == 0 {
+            String::new()
+        } else {
+            let nul_pos = buf.iter().position(|&b| b == 0).unwrap_or(brand_len as usize);
+            String::from_utf8_lossy(&buf[..nul_pos]).to_string()
+        };
+
+        // Read ro.product.model
+        let model_len = unsafe {
             libc::__system_property_get(
                 c"ro.product.model".as_ptr(),
                 buf.as_mut_ptr() as *mut libc::c_char,
             )
         };
-        if len == 0 {
+        if model_len == 0 {
             anyhow::bail!("failed to get ro.product.model");
         }
-        let nul_pos = buf.iter().position(|&b| b == 0).unwrap_or(len as usize);
-        Ok(String::from_utf8_lossy(&buf[..nul_pos]).to_string())
+        let nul_pos = buf.iter().position(|&b| b == 0).unwrap_or(model_len as usize);
+        let model = String::from_utf8_lossy(&buf[..nul_pos]).to_string();
+
+        if brand.is_empty() {
+            Ok(model)
+        } else {
+            Ok(format!("{} {}", brand, model))
+        }
     }
 
     #[cfg(not(target_os = "android"))]
