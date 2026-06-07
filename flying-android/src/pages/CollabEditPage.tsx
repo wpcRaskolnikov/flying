@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import {
   Box,
   Stack,
@@ -77,6 +77,17 @@ function useYjsCollab(session: SessionConfig | null) {
   );
   const extensions = useMemo(() => (collabExt ? [collabExt] : []), [collabExt]);
 
+  // useRef for showSnackbar to avoid triggering reconnection
+  const showSnackbarRef = useRef(showSnackbar);
+  useEffect(() => {
+    showSnackbarRef.current = showSnackbar;
+  }, [showSnackbar]);
+
+  // Extract stable string dependencies
+  const serverUrl = session?.serverUrl ?? "";
+  const room = session?.room ?? "";
+  const name = session?.name ?? "";
+
   useEffect(() => {
     // Reset UI state on every session change (including disconnect).
     setCollabExt(null);
@@ -84,10 +95,8 @@ function useYjsCollab(session: SessionConfig | null) {
     setConnected(false);
     setConnecting(false);
 
-    // No active session — nothing to connect to.
-    if (!session) return;
+    if (!serverUrl || !room || !name) return;
 
-    const { serverUrl, room, name } = session;
     setConnecting(true);
 
     const ydoc = new Y.Doc();
@@ -118,20 +127,22 @@ function useYjsCollab(session: SessionConfig | null) {
       setPeers(list);
     };
 
+    let timeout: ReturnType<typeof setTimeout>;
+
     const handleStatus = ({ status }: { status: string }) => {
-      clearTimeout(timeout);
       if (status === "connected") {
+        clearTimeout(timeout);
         setConnected(true);
         setConnecting(false);
-        showSnackbar(`Joined "${room}"`, "success");
+        showSnackbarRef.current(`Joined "${room}"`, "success");
       } else if (status === "disconnected") {
         setConnected(false);
-        showSnackbar("Connection lost, retrying...", "error");
+        showSnackbarRef.current("Connection lost, retrying...", "error");
       }
     };
 
-    const timeout = setTimeout(() => {
-      showSnackbar(`Connection to ${serverUrl} timed out`, "error");
+    timeout = setTimeout(() => {
+      showSnackbarRef.current(`Connection to ${serverUrl} timed out`, "error");
       provider.destroy();
     }, 5000);
     provider.on("status", handleStatus);
@@ -146,7 +157,8 @@ function useYjsCollab(session: SessionConfig | null) {
       undoManager.destroy();
       ydoc.destroy();
     };
-  }, [session, showSnackbar]);
+    // Strict control: only reconnect when string values actually change
+  }, [serverUrl, room, name]);
 
   return { peers, connected, connecting, extensions };
 }
@@ -218,6 +230,7 @@ function CollabEditPage() {
   };
 
   const handleCopyRoomName = async () => {
+    if (!currentRoom) return;
     await writeText(currentRoom);
     showSnackbar("Room name copied", "success");
   };
