@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState } from "react";
 import {
   Box,
   Stack,
@@ -29,139 +29,13 @@ import {
   Person as PersonIcon,
 } from "@mui/icons-material";
 import CodeMirror from "@uiw/react-codemirror";
-import { yCollab } from "y-codemirror.next";
-import * as Y from "yjs";
-import { WebsocketProvider } from "y-websocket";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { invoke } from "@tauri-apps/api/core";
-import { useSnackbar } from "../hooks";
+import { useSnackbar, useYjsCollab } from "../hooks";
+import type { SessionConfig } from "../hooks";
 import { predicates, objects } from "friendly-words";
 
-interface Peer {
-  id: number;
-  color: string;
-  name: string;
-}
-
-const USER_COLORS = [
-  { color: "#e57373", light: "#e5737333" },
-  { color: "#64b5f6", light: "#64b5f633" },
-  { color: "#81c784", light: "#81c78433" },
-  { color: "#ffb74d", light: "#ffb74d33" },
-  { color: "#ba68c8", light: "#ba68c833" },
-  { color: "#4dd0e1", light: "#4dd0e133" },
-  { color: "#f06292", light: "#f0629233" },
-  { color: "#a1887f", light: "#a1887f33" },
-];
-
-function pickColor() {
-  return USER_COLORS[Math.floor(Math.random() * USER_COLORS.length)];
-}
-
 const DEFAULT_PORT = 18080;
-
-interface SessionConfig {
-  serverUrl: string;
-  room: string;
-  name: string;
-}
-
-function useYjsCollab(session: SessionConfig | null) {
-  const { showSnackbar } = useSnackbar();
-
-  const [peers, setPeers] = useState<Peer[]>([]);
-  const [connected, setConnected] = useState(false);
-  const [connecting, setConnecting] = useState(false);
-  const [collabExt, setCollabExt] = useState<ReturnType<typeof yCollab> | null>(
-    null,
-  );
-  const extensions = useMemo(() => (collabExt ? [collabExt] : []), [collabExt]);
-
-  // useRef for showSnackbar to avoid triggering reconnection
-  const showSnackbarRef = useRef(showSnackbar);
-  useEffect(() => {
-    showSnackbarRef.current = showSnackbar;
-  }, [showSnackbar]);
-
-  // Extract stable string dependencies
-  const serverUrl = session?.serverUrl ?? "";
-  const room = session?.room ?? "";
-  const name = session?.name ?? "";
-
-  useEffect(() => {
-    // Reset UI state on every session change (including disconnect).
-    setCollabExt(null);
-    setPeers([]);
-    setConnected(false);
-    setConnecting(false);
-
-    if (!serverUrl || !room || !name) return;
-
-    setConnecting(true);
-
-    const ydoc = new Y.Doc();
-    const ytext = ydoc.getText("codemirror");
-    const undoManager = new Y.UndoManager(ytext);
-
-    const uc = pickColor();
-    const provider = new WebsocketProvider(serverUrl, room, ydoc);
-    provider.awareness.setLocalStateField("user", {
-      name,
-      color: uc.color,
-      colorLight: uc.light,
-    });
-
-    const ext = yCollab(ytext, provider.awareness, { undoManager });
-    setCollabExt(ext);
-
-    const updatePeers = () => {
-      const states = provider.awareness.getStates();
-      const list: Peer[] = [];
-      const localId = provider.awareness.clientID;
-      states.forEach((state: any, clientId: number) => {
-        if (clientId !== localId) {
-          const u = state.user || { name: "Anonymous", color: "#999" };
-          list.push({ id: clientId, color: u.color, name: u.name });
-        }
-      });
-      setPeers(list);
-    };
-
-    let timeout: ReturnType<typeof setTimeout>;
-
-    const handleStatus = ({ status }: { status: string }) => {
-      if (status === "connected") {
-        clearTimeout(timeout);
-        setConnected(true);
-        setConnecting(false);
-        showSnackbarRef.current(`Joined "${room}"`, "success");
-      } else if (status === "disconnected") {
-        setConnected(false);
-        showSnackbarRef.current("Connection lost, retrying...", "error");
-      }
-    };
-
-    timeout = setTimeout(() => {
-      showSnackbarRef.current(`Connection to ${serverUrl} timed out`, "error");
-      provider.destroy();
-    }, 5000);
-    provider.on("status", handleStatus);
-    provider.awareness.on("change", updatePeers);
-    updatePeers();
-
-    return () => {
-      clearTimeout(timeout);
-      provider.off("status", handleStatus);
-      provider.awareness.off("change", updatePeers);
-      provider.destroy();
-      undoManager.destroy();
-      ydoc.destroy();
-    };
-    // Strict control: only reconnect when string values actually change
-  }, [serverUrl, room, name]);
-
-  return { peers, connected, connecting, extensions };
-}
 
 function CollabEditPage() {
   const [isServerRunning, setIsServerRunning] = useState(false);
@@ -174,10 +48,9 @@ function CollabEditPage() {
   );
   const { showSnackbar } = useSnackbar();
 
-  const { peers, connected, connecting, extensions } =
-    useYjsCollab(activeSession);
+  const { peers, status, extensions } = useYjsCollab(activeSession);
   const currentRoom = activeSession?.room ?? "";
-  const inRoom = activeSession !== null;
+  const inRoom = status === "connected";
 
   const handleToggleServer = async () => {
     if (isServerRunning) {
@@ -326,7 +199,7 @@ function CollabEditPage() {
           variant="contained"
           size="large"
           startIcon={
-            connecting ? (
+            status === "connecting" ? (
               <CircularProgress size={20} color="inherit" />
             ) : (
               <WifiIcon />
@@ -334,9 +207,9 @@ function CollabEditPage() {
           }
           onClick={handleJoinRoom}
           fullWidth
-          disabled={connecting}
+          disabled={status === "connecting"}
         >
-          {connecting ? "Connecting..." : "JOIN ROOM"}
+          {status === "connecting" ? "Connecting..." : "JOIN ROOM"}
         </Button>
       </Stack>
     );
@@ -356,7 +229,7 @@ function CollabEditPage() {
             size="small"
             icon={<GroupIcon />}
             label={`${peers.length + 1}`}
-            color={connected ? "success" : "default"}
+            color="success"
             variant="outlined"
             sx={{ mr: 1 }}
           />
