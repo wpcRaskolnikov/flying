@@ -228,6 +228,18 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@codemirror/autocomplete@npm:^6.3.2":
+  version: 6.20.3
+  resolution: "@codemirror/autocomplete@npm:6.20.3"
+  dependencies:
+    "@codemirror/language": "npm:^6.0.0"
+    "@codemirror/state": "npm:^6.0.0"
+    "@codemirror/view": "npm:^6.17.0"
+    "@lezer/common": "npm:^1.0.0"
+  checksum: 10c0/c8aa358d25cde007a7073fb39fd268d1908aa0f664047cc44af0f7a6b2835f227c9bd60f0c7cde5914cf2c9ef9c014fee6e322832e83d9f1c1b55872d2300b69
+  languageName: node
+  linkType: hard
+
 "@codemirror/commands@npm:^6.0.0, @codemirror/commands@npm:^6.1.0":
   version: 6.10.3
   resolution: "@codemirror/commands@npm:6.10.3"
@@ -240,9 +252,22 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@codemirror/language@npm:^6.0.0":
-  version: 6.12.3
-  resolution: "@codemirror/language@npm:6.12.3"
+"@codemirror/lang-python@npm:^6.2.1":
+  version: 6.2.1
+  resolution: "@codemirror/lang-python@npm:6.2.1"
+  dependencies:
+    "@codemirror/autocomplete": "npm:^6.3.2"
+    "@codemirror/language": "npm:^6.8.0"
+    "@codemirror/state": "npm:^6.0.0"
+    "@lezer/common": "npm:^1.2.1"
+    "@lezer/python": "npm:^1.1.4"
+  checksum: 10c0/6e92ac7e5e6e3162cfbbef40be6314278b9b9ff6f65cfc207a75ec95d84a404b9930913240e1a15e3d18c538f6b243f6a0bba4c3e37fa4e318939dfebc51ebd0
+  languageName: node
+  linkType: hard
+
+"@codemirror/language@npm:6.12.4":
+  version: 6.12.4
+  resolution: "@codemirror/language@npm:6.12.4"
   dependencies:
     "@codemirror/state": "npm:^6.0.0"
     "@codemirror/view": "npm:^6.23.0"
@@ -250,7 +275,7 @@ __metadata:
     "@lezer/highlight": "npm:^1.0.0"
     "@lezer/lr": "npm:^1.0.0"
     style-mod: "npm:^4.0.0"
-  checksum: 10c0/682d476f35f187a8d2f59f9b2e561045353c87736e5774b5b8dd22ade7deb3c85b9d3cdde988b00aafb345732144c134adf45dadab067430aaee159abcc456a4
+  checksum: 10c0/1b704a66f618d96eddf5937a41996e1ab42a70b5333a90b768e5539c25b7ab822e91a93e66b14d47a886cd73b3e3e22ddf77b8f11fb2f496ebd7ba010f3c4deb
   languageName: node
   linkType: hard
 
@@ -690,7 +715,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@lezer/common@npm:^1.0.0, @lezer/common@npm:^1.1.0, @lezer/common@npm:^1.3.0, @lezer/common@npm:^1.5.0":
+"@lezer/common@npm:^1.0.0, @lezer/common@npm:^1.1.0, @lezer/common@npm:^1.2.0, @lezer/common@npm:^1.2.1, @lezer/common@npm:^1.3.0, @lezer/common@npm:^1.5.0":
   version: 1.5.2
   resolution: "@lezer/common@npm:1.5.2"
   checksum: 10c0/e39b46d74899409eab549df7942f00cd8c7f46c81ef0e2f079654ca96d262fca009927328bcd500d69270f5f09986e74768bed19c0acaadbd22f1a6c7dd9bd85
@@ -712,6 +737,17 @@ __metadata:
   dependencies:
     "@lezer/common": "npm:^1.0.0"
   checksum: 10c0/15fac0ecc02a57f111432808c89f7cfb9fed0d78d0a98742607acb5859220a9c18526dd6d509d9fe17f5ef762aa73ce29fa6b930739abb857c1df8949a9003ea
+  languageName: node
+  linkType: hard
+
+"@lezer/python@npm:^1.1.4":
+  version: 1.1.19
+  resolution: "@lezer/python@npm:1.1.19"
+  dependencies:
+    "@lezer/common": "npm:^1.2.0"
+    "@lezer/highlight": "npm:^1.0.0"
+    "@lezer/lr": "npm:^1.0.0"
+  checksum: 10c0/e1e337d78b161ae0754a8969f956273fbd3e3a0b8d00005dab209b585a8ccb4d8fb132960cee7571c159a75cfa9bf2609894b9cc1eec9c059593495da4d4beb0
   languageName: node
   linkType: hard
 
@@ -1427,32 +1463,6 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@y/protocols@npm:^1.0.6-1":
-  version: 1.0.6-rc.1
-  resolution: "@y/protocols@npm:1.0.6-rc.1"
-  dependencies:
-    lib0: "npm:^1.0.0-rc.1"
-  peerDependencies:
-    "@y/y": "*"
-  checksum: 10c0/60ecf0f1567204c099359cbc9241d9837a38c6f6d3ce6068c37547e4c5254f5e16be71990ec0e6246c9ad57248b293a0821cb90c02aad874ea0d92a8d8216971
-  languageName: node
-  linkType: hard
-
-"@y/websocket-server@npm:^0.1.5":
-  version: 0.1.5
-  resolution: "@y/websocket-server@npm:0.1.5"
-  dependencies:
-    "@y/protocols": "npm:^1.0.6-1"
-    lib0: "npm:^0.2.102"
-    ws: "npm:^6.2.1"
-    yjs: "npm:^14.0.0-7"
-  bin:
-    y-websocket: src/server.js
-    y-websocket-server: src/server.js
-  checksum: 10c0/f4d9d94e937867a126e0e6808a14ab981c78289cd4f2cfa196847a1fbe2270df0f2363e0d313a61b69effdf89059864ce2fc705e681ffad9b3f3e5d01eb49cb2
-  languageName: node
-  linkType: hard
-
 "abbrev@npm:^4.0.0":
   version: 4.0.0
   resolution: "abbrev@npm:4.0.0"
@@ -1586,13 +1596,6 @@ __metadata:
   version: 1.0.0
   resolution: "async-generator-function@npm:1.0.0"
   checksum: 10c0/2c50ef856c543ad500d8d8777d347e3c1ba623b93e99c9263ecc5f965c1b12d2a140e2ab6e43c3d0b85366110696f28114649411cbcd10b452a92a2318394186
-  languageName: node
-  linkType: hard
-
-"async-limiter@npm:~1.0.0":
-  version: 1.0.1
-  resolution: "async-limiter@npm:1.0.1"
-  checksum: 10c0/0693d378cfe86842a70d4c849595a0bb50dc44c11649640ca982fa90cbfc74e3cc4753b5a0847e51933f2e9c65ce8e05576e75e5e1fd963a086e673735b35969
   languageName: node
   linkType: hard
 
@@ -2489,6 +2492,7 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "flying-android@workspace:."
   dependencies:
+    "@codemirror/lang-python": "npm:^6.2.1"
     "@codemirror/state": "npm:^6.6.0"
     "@codemirror/view": "npm:^6.41.1"
     "@emotion/react": "npm:^11.14.0"
@@ -2506,7 +2510,6 @@ __metadata:
     "@types/react-dom": "npm:^19.1.6"
     "@uiw/react-codemirror": "npm:^4.25.9"
     "@vitejs/plugin-react": "npm:^4.6.0"
-    "@y/websocket-server": "npm:^0.1.5"
     friendly-words: "npm:^1.3.1"
     jotai: "npm:^2.20.0"
     react: "npm:^19.1.0"
@@ -2940,7 +2943,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"lib0@npm:^0.2.102, lib0@npm:^0.2.115-6, lib0@npm:^0.2.42, lib0@npm:^0.2.85, lib0@npm:^0.2.99":
+"lib0@npm:^0.2.102, lib0@npm:^0.2.42, lib0@npm:^0.2.85, lib0@npm:^0.2.99":
   version: 0.2.117
   resolution: "lib0@npm:0.2.117"
   dependencies:
@@ -2950,17 +2953,6 @@ __metadata:
     0gentesthtml: bin/gentesthtml.js
     0serve: bin/0serve.js
   checksum: 10c0/d1b9205890d5d0cbd95ffdb0d6df6f9fd2c315b89e195fc9b015f3778046fb34bc12e94205ccf410a3073b836444045dcef6671fa2f6d5a7f70ebf8b6b0c0616
-  languageName: node
-  linkType: hard
-
-"lib0@npm:^1.0.0-rc.1":
-  version: 1.0.0-rc.12
-  resolution: "lib0@npm:1.0.0-rc.12"
-  bin:
-    0ecdsa-generate-keypair: src/bin/0ecdsa-generate-keypair.js
-    0gentesthtml: src/bin/gentesthtml.js
-    0serve: src/bin/0serve.js
-  checksum: 10c0/fa0b71be748fb1233f44e3feae7108578e6e0b66d2a37a295f80faaba4200c6726495436f3fd254775a8ce03682bf723098a86ac4b0344ff4b0fe89d52fedff9
   languageName: node
   linkType: hard
 
@@ -4231,15 +4223,6 @@ __metadata:
   languageName: node
   linkType: hard
 
-"ws@npm:^6.2.1":
-  version: 6.2.3
-  resolution: "ws@npm:6.2.3"
-  dependencies:
-    async-limiter: "npm:~1.0.0"
-  checksum: 10c0/56a35b9799993cea7ce2260197e7879f21bbbb194a967f31acbbda6f7f46ecda4365951966fb062044c95197e19fb2f053be6f65c172435455186835f494de41
-  languageName: node
-  linkType: hard
-
 "y-codemirror.next@npm:^0.3.5":
   version: 0.3.5
   resolution: "y-codemirror.next@npm:0.3.5"
@@ -4332,15 +4315,6 @@ __metadata:
   dependencies:
     lib0: "npm:^0.2.99"
   checksum: 10c0/98ec3c85fdb8420fe250e86e66676d7421dd4c1960319409a39e6ae90d05dc967793b67705736751633d8b22e334dba51a1404ad83139300c0be42195f068261
-  languageName: node
-  linkType: hard
-
-"yjs@npm:^14.0.0-7":
-  version: 14.0.0-16
-  resolution: "yjs@npm:14.0.0-16"
-  dependencies:
-    lib0: "npm:^0.2.115-6"
-  checksum: 10c0/70288648db639195a2f0e465b2181e0036ddb9402ee4230bdb5b79c40e5c2edb59ae0c3339d7aa48428ec5c3f23a160b9578bb8d77719100343f99bc3de6292a
   languageName: node
   linkType: hard
 

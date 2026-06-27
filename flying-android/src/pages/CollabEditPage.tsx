@@ -301,7 +301,7 @@ function CollabEditPage() {
       </AppBar>
 
       {/* Editor */}
-      <Box sx={{ flexGrow: 1, overflow: "hidden" }}>
+      <Box sx={{ flexGrow: 1, overflow: "visible" }}>
         <CodeMirror
           key={currentRoom}
           extensions={extensions}
