@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import {
+  Autocomplete,
   Box,
   Button,
   Stack,
@@ -19,13 +20,14 @@ import {
   Folder as FolderIcon,
   Autorenew as AutorenewIcon,
   Stop as StopIcon,
+  Delete as DeleteIcon,
 } from "@mui/icons-material";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { useAtomValue } from "jotai";
 import { portAtom } from "../store";
-import { useSnackbar } from "../hooks";
+import { useSnackbar, useInputHistory } from "../hooks";
 import type { ConnectionConfig, TransferStatusPayload, PickedEntity } from "../types";
 
 function SendPage() {
@@ -42,6 +44,8 @@ function SendPage() {
 
   const { showSnackbar } = useSnackbar();
   const port = useAtomValue(portAtom);
+  const connectIpHistory = useInputHistory("send-connectIp");
+  const relayAddrHistory = useInputHistory("send-relayAddr");
 
   const configModeRef = useRef(config.mode);
   configModeRef.current = config.mode;
@@ -177,6 +181,13 @@ function SendPage() {
     }
 
     try {
+      // Save to history
+      if (config.mode === "connect") {
+        connectIpHistory.addToHistory(config.connectIp);
+      } else if (config.mode === "relay_listen" || config.mode === "relay_dial") {
+        relayAddrHistory.addToHistory(config.relayAddr);
+      }
+
       setIsSending(true);
       await invoke("send_file", {
         fileUri: selectedFile,
@@ -299,28 +310,80 @@ function SendPage() {
       </FormControl>
 
       {config.mode === "connect" && (
-        <TextField
-          fullWidth
-          label="Target IP Address"
-          placeholder="e.g., 192.168.1.100"
+        <Autocomplete
+          freeSolo
+          options={connectIpHistory.history}
           value={config.connectIp}
-          onChange={(e) =>
-            setConfig((prev) => ({ ...prev, connectIp: e.target.value }))
+          onInputChange={(_, newValue) =>
+            setConfig((prev) => ({ ...prev, connectIp: newValue }))
           }
           disabled={isSending}
+          renderOption={(props, option) => (
+            <Box
+              component="li"
+              {...props}
+              key={option}
+              sx={{ display: "flex", alignItems: "center" }}
+            >
+              <span style={{ flexGrow: 1 }}>{option}</span>
+              <IconButton
+                size="small"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  connectIpHistory.removeFromHistory(option);
+                }}
+              >
+                <DeleteIcon fontSize="small" />
+              </IconButton>
+            </Box>
+          )}
+          renderInput={(params) => (
+            <TextField
+              {...params}
+              fullWidth
+              label="Target IP Address"
+              placeholder="e.g., 192.168.1.100"
+            />
+          )}
         />
       )}
 
       {(config.mode === "relay_listen" || config.mode === "relay_dial") && (
-        <TextField
-          fullWidth
-          label="Relay Address"
-          placeholder="e.g., /ip4/1.2.3.4/tcp/4001/p2p/12D3K..."
+        <Autocomplete
+          freeSolo
+          options={relayAddrHistory.history}
           value={config.relayAddr}
-          onChange={(e) =>
-            setConfig((prev) => ({ ...prev, relayAddr: e.target.value }))
+          onInputChange={(_, newValue) =>
+            setConfig((prev) => ({ ...prev, relayAddr: newValue }))
           }
           disabled={isSending}
+          renderOption={(props, option) => (
+            <Box
+              component="li"
+              {...props}
+              key={option}
+              sx={{ display: "flex", alignItems: "center" }}
+            >
+              <span style={{ flexGrow: 1 }}>{option}</span>
+              <IconButton
+                size="small"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  relayAddrHistory.removeFromHistory(option);
+                }}
+              >
+                <DeleteIcon fontSize="small" />
+              </IconButton>
+            </Box>
+          )}
+          renderInput={(params) => (
+            <TextField
+              {...params}
+              fullWidth
+              label="Relay Address"
+              placeholder="e.g., /ip4/1.2.3.4/tcp/4001/p2p/12D3K..."
+            />
+          )}
         />
       )}
 

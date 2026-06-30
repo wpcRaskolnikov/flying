@@ -1,5 +1,6 @@
 import { useState } from "react";
 import {
+  Autocomplete,
   Box,
   Stack,
   TextField,
@@ -27,11 +28,12 @@ import {
   ContentCopy as CopyIcon,
   Autorenew as AutorenewIcon,
   Person as PersonIcon,
+  Delete as DeleteIcon,
 } from "@mui/icons-material";
 import CodeMirror from "@uiw/react-codemirror";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { invoke } from "@tauri-apps/api/core";
-import { useSnackbar, useYjsCollab } from "../hooks";
+import { useSnackbar, useYjsCollab, useInputHistory } from "../hooks";
 import type { SessionConfig } from "../hooks";
 import { predicates, objects } from "friendly-words";
 
@@ -47,6 +49,7 @@ function CollabEditPage() {
     null,
   );
   const { showSnackbar } = useSnackbar();
+  const serverAddrHistory = useInputHistory("collab-serverAddr");
 
   const { peers, status, extensions } = useYjsCollab(activeSession);
   const currentRoom = activeSession?.room ?? "";
@@ -90,6 +93,7 @@ function CollabEditPage() {
     }
 
     const protocol = useWss ? "wss" : "ws";
+    serverAddrHistory.addToHistory(serverAddr);
     setActiveSession({
       serverUrl: `${protocol}://${serverAddr.trim()}`,
       room: roomName.trim(),
@@ -155,12 +159,39 @@ function CollabEditPage() {
               <MenuItem value="wss">wss://</MenuItem>
             </Select>
           </FormControl>
-          <TextField
-            fullWidth
-            label="Server Address"
+          <Autocomplete
+            freeSolo
+            options={serverAddrHistory.history}
             value={serverAddr}
-            onChange={(e) => setServerAddr(e.target.value)}
-            placeholder="e.g., 192.168.1.10:8080 or demos.yjs.dev"
+            onInputChange={(_, newValue) => setServerAddr(newValue)}
+            sx={{ flexGrow: 1 }}
+            renderOption={(props, option) => (
+              <Box
+                component="li"
+                {...props}
+                key={option}
+                sx={{ display: "flex", alignItems: "center" }}
+              >
+                <span style={{ flexGrow: 1 }}>{option}</span>
+                <IconButton
+                  size="small"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    serverAddrHistory.removeFromHistory(option);
+                  }}
+                >
+                  <DeleteIcon fontSize="small" />
+                </IconButton>
+              </Box>
+            )}
+            renderInput={(params) => (
+              <TextField
+                {...params}
+                fullWidth
+                label="Server Address"
+                placeholder="e.g., 192.168.1.10:8080 or demos.yjs.dev"
+              />
+            )}
           />
         </Box>
 
