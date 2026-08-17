@@ -1548,7 +1548,7 @@ dependencies = [
 
 [[package]]
 name = "flying"
-version = "5.1.2"
+version = "5.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1572,7 +1572,7 @@ dependencies = [
 
 [[package]]
 name = "flying-android"
-version = "0.9.5"
+version = "0.9.6"
 dependencies = [
  "anyhow",
  "flying",

@@ -1,8 +1,9 @@
 use crate::NetworkStream;
 use ring::{aead, hkdf, hmac};
 use spake2::{Ed25519Group, Identity, Password, Spake2};
-use std::ops::{Deref, DerefMut};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use std::pin::Pin;
+use std::task::{Context, Poll};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 #[derive(Clone, Copy)]
 pub enum Role {
@@ -15,11 +16,12 @@ const KEY_SIZE: usize = 32;
 
 pub struct Session<S: NetworkStream> {
     stream: S,
+    role: Role,
 }
 
 impl<S: NetworkStream> Session<S> {
-    pub fn new(stream: S) -> Self {
-        Self { stream }
+    pub fn new(stream: S, role: Role) -> Self {
+        Self { stream, role }
     }
 
     async fn exchange_version(&mut self, version: u64) -> anyhow::Result<()> {
@@ -36,8 +38,8 @@ impl<S: NetworkStream> Session<S> {
         Ok(())
     }
 
-    async fn exchange_mode(&mut self, role: Role) -> anyhow::Result<()> {
-        let my_mode = role as u64;
+    async fn exchange_mode(&mut self) -> anyhow::Result<()> {
+        let my_mode = self.role as u64;
         self.stream.write_u64(my_mode).await?;
         let peer_mode = self.stream.read_u64().await?;
 
@@ -48,14 +50,10 @@ impl<S: NetworkStream> Session<S> {
         Ok(())
     }
 
-    async fn negotiate_key(
-        &mut self,
-        password: &str,
-        role: Role,
-    ) -> anyhow::Result<[u8; SHARED_SECRET_SIZE]> {
+    async fn negotiate_key(&mut self, password: &str) -> anyhow::Result<[u8; SHARED_SECRET_SIZE]> {
         const SPAKE2_MSG_SIZE: usize = 33;
 
-        let (state, outbound_msg) = match role {
+        let (state, outbound_msg) = match self.role {
             Role::Sender => Spake2::<Ed25519Group>::start_a(
                 &Password::new(password),
                 &Identity::new(b"sender"),
@@ -114,10 +112,10 @@ impl<S: NetworkStream> Session<S> {
         Ok((aead_key, hmac_key))
     }
 
-    async fn confirm_key(&mut self, hmac_key: &hmac::Key, role: Role) -> anyhow::Result<()> {
+    async fn confirm_key(&mut self, hmac_key: &hmac::Key) -> anyhow::Result<()> {
         const HMAC_TAG_SIZE: usize = 32;
 
-        let (our_role, peer_role): (&[u8], &[u8]) = match role {
+        let (our_role, peer_role): (&[u8], &[u8]) = match self.role {
             Role::Sender => (b"sender", b"receiver"),
             Role::Receiver => (b"receiver", b"sender"),
         };
@@ -133,16 +131,12 @@ impl<S: NetworkStream> Session<S> {
             .map_err(|_| anyhow::anyhow!("Key confirmation failed: password mismatch"))
     }
 
-    async fn exchange_secret(
-        &mut self,
-        password: &str,
-        role: Role,
-    ) -> anyhow::Result<aead::LessSafeKey> {
-        let shared_secret = self.negotiate_key(password, role).await?;
+    async fn exchange_secret(&mut self, password: &str) -> anyhow::Result<aead::LessSafeKey> {
+        let shared_secret = self.negotiate_key(password).await?;
 
         let (aead_key, hmac_key) = self.derive_keys(&shared_secret)?;
 
-        self.confirm_key(&hmac_key, role).await?;
+        self.confirm_key(&hmac_key).await?;
 
         Ok(aead::LessSafeKey::new(
             aead::UnboundKey::new(&aead::AES_256_GCM, &aead_key)
@@ -154,39 +148,57 @@ impl<S: NetworkStream> Session<S> {
         &mut self,
         version: u64,
         password: &str,
-        role: Role,
     ) -> anyhow::Result<aead::LessSafeKey> {
         self.exchange_version(version).await?;
-        self.exchange_mode(role).await?;
-        self.exchange_secret(password, role).await
+        self.exchange_mode().await?;
+        self.exchange_secret(password).await
     }
 
-    /// Release the inner stream so it can be used for file transfer.
-    pub fn into_inner(self) -> S {
-        self.stream
-    }
-}
-
-// ── Deref / DerefMut – transparent access to the inner stream ─────
-impl<S: NetworkStream> Deref for Session<S> {
-    type Target = S;
-
-    fn deref(&self) -> &Self::Target {
-        &self.stream
-    }
-}
-
-impl<S: NetworkStream> DerefMut for Session<S> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.stream
+    pub async fn finish(&mut self) -> anyhow::Result<()> {
+        match self.role {
+            Role::Sender => {
+                let _ = self.read_u8().await?;
+            }
+            Role::Receiver => {
+                self.write_u8(1).await?;
+                self.flush().await?;
+            }
+        }
+        self.shutdown().await?;
+        Ok(())
     }
 }
 
-// ── Trait-object convenience constructor ───────────────────────────
-impl Session<Box<dyn NetworkStream>> {
-    /// Create a session from a boxed dynamic stream (returned by
-    /// [`crate::establish_connection`]).
-    pub fn from_boxed(stream: Box<dyn NetworkStream>) -> Self {
-        Self { stream }
+impl<S: NetworkStream> AsyncRead for Session<S> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<tokio::io::Result<()>> {
+        Pin::new(&mut self.get_mut().stream).poll_read(cx, buf)
+    }
+}
+
+impl<S: NetworkStream> AsyncWrite for Session<S> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<Result<usize, tokio::io::Error>> {
+        Pin::new(&mut self.get_mut().stream).poll_write(cx, buf)
+    }
+
+    fn poll_flush(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), tokio::io::Error>> {
+        Pin::new(&mut self.get_mut().stream).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), tokio::io::Error>> {
+        Pin::new(&mut self.get_mut().stream).poll_shutdown(cx)
     }
 }

@@ -1,4 +1,6 @@
 pub mod mdns;
+pub mod metadata;
+pub mod progress;
 mod receive;
 pub mod relay;
 pub mod send;
@@ -10,7 +12,7 @@ use mdns_sd::ServiceDaemon;
 use std::net::{IpAddr, SocketAddr};
 use std::path::Path;
 use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    io::{AsyncRead, AsyncWrite},
     net::TcpStream,
     sync::mpsc::Sender,
 };
@@ -175,19 +177,14 @@ pub async fn run_receiver(
     let (stream, mdns_daemon) =
         establish_connection(&connection_mode, port, peer_id_tx, mdns_tx).await?;
 
-    let mut session = session::Session::from_boxed(stream);
-    let key = session.handshake(VERSION, password, session::Role::Receiver).await?;
-    let mut stream = session.into_inner();
+    let mut session = session::Session::new(stream, session::Role::Receiver);
+    let key = session.handshake(VERSION, password).await?;
 
-    receive::receive(stream.as_mut(), output_dir, &key, progress_tx).await?;
+    receive::receive(&mut session, output_dir, &key, progress_tx).await?;
 
     println!("\nTransfer complete!");
 
-    // Send ACK to sender
-    stream.write_u8(1).await?;
-    stream.flush().await?;
-
-    stream.shutdown().await?;
+    session.finish().await?;
     if let Some(mdns_daemon) = mdns_daemon {
         let _ = mdns_daemon.shutdown();
     }
@@ -206,18 +203,14 @@ pub async fn run_sender(
     let (stream, mdns_daemon) =
         establish_connection(&connection_mode, port, peer_id_tx, mdns_tx).await?;
 
-    let mut session = session::Session::from_boxed(stream);
-    let key = session.handshake(VERSION, password, session::Role::Sender).await?;
-    let mut stream = session.into_inner();
+    let mut session = session::Session::new(stream, session::Role::Sender);
+    let key = session.handshake(VERSION, password).await?;
 
-    send::send(stream.as_mut(), file_path, &key, progress_tx).await?;
+    send::send(&mut session, file_path, &key, progress_tx).await?;
 
     println!("\nTransfer complete!");
 
-    // Wait for ACK from receiver
-    let _ = stream.read_u8().await?;
-
-    stream.shutdown().await?;
+    session.finish().await?;
     if let Some(mdns_daemon) = mdns_daemon {
         let _ = mdns_daemon.shutdown();
     }
@@ -247,18 +240,14 @@ pub async fn run_sender_persistent(
         println!("Connection accepted from {}\n", socket_addr);
 
         let result = async {
-            let mut session = session::Session::new(stream);
-            let key = session.handshake(VERSION, password, session::Role::Sender).await?;
-            let mut stream = session.into_inner();
+            let mut session = session::Session::new(stream, session::Role::Sender);
+            let key = session.handshake(VERSION, password).await?;
 
-            send::send(&mut stream, file_path, &key, progress_tx.clone()).await?;
+            send::send(&mut session, file_path, &key, progress_tx.clone()).await?;
 
             println!("\nTransfer complete!");
 
-            // Wait for ACK from receiver
-            let _ = stream.read_u8().await?;
-
-            stream.shutdown().await?;
+            session.finish().await?;
 
             Ok::<(), anyhow::Error>(())
         }

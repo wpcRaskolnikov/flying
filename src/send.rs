@@ -1,4 +1,5 @@
-use crate::{NetworkStream, utils};
+use crate::metadata::Metadata;
+use crate::{NetworkStream, progress, utils};
 use humansize::{BINARY, format_size};
 use ring::{aead, rand};
 use std::path::Path;
@@ -8,27 +9,7 @@ use tokio::{
     sync::mpsc::Sender,
 };
 
-const CHUNK_SIZE: usize = 1_048_576; // 1 MiB
-
-/// Send top-level metadata: relative path, is_folder flag, and file/folder size.
-pub async fn send_metadata(
-    stream: &mut dyn NetworkStream,
-    relative_path: &str,
-    is_folder: bool,
-    size: u64,
-) -> anyhow::Result<()> {
-    stream.write_u64(relative_path.len() as u64).await?;
-    stream.write_all(relative_path.as_bytes()).await?;
-    stream.write_u64(u64::from(is_folder)).await?;
-    stream.write_u64(size).await?;
-    stream.flush().await?;
-    Ok(())
-}
-
-pub async fn check_duplicate(
-    stream: &mut dyn NetworkStream,
-    file: &mut File,
-) -> anyhow::Result<bool> {
+async fn check_duplicate(stream: &mut dyn NetworkStream, file: &mut File) -> anyhow::Result<bool> {
     let has_file = stream.read_u64().await?;
     if has_file == 1 {
         let local_hash = utils::hash_file(file).await?;
@@ -46,20 +27,16 @@ pub async fn check_duplicate(
     }
 }
 
-pub async fn encrypt_and_send(
+async fn encrypt_and_send(
     stream: &mut dyn NetworkStream,
     mut file: File,
-    size: u64,
     key: &aead::LessSafeKey,
-    progress_tx: Option<Sender<u8>>,
+    progress: &mut progress::Progress,
 ) -> anyhow::Result<()> {
+    const CHUNK_SIZE: usize = 1_048_576; // 1 MiB
+
     let rng = rand::SystemRandom::new();
     let mut buffer = vec![0u8; CHUNK_SIZE];
-    let mut progress = if let Some(tx) = progress_tx {
-        utils::ProgressTracker::with_channel(tx)
-    } else {
-        Default::default()
-    };
     let mut bytes_sent = 0u64;
 
     loop {
@@ -87,7 +64,7 @@ pub async fn encrypt_and_send(
         stream.write_all(&packet).await?;
 
         bytes_sent += bytes_read as u64;
-        progress.update(bytes_sent, size)?;
+        progress.update(bytes_sent)?;
     }
 
     stream.write_u64(0).await?; // Signal end of file
@@ -97,38 +74,29 @@ pub async fn encrypt_and_send(
     Ok(())
 }
 
-/// Top-level send: reads file/folder info, sends metadata, dispatches to
-/// send_file or send_folder.
-pub async fn send(
+pub async fn send_file(
     stream: &mut dyn NetworkStream,
     file_path: &Path,
     key: &aead::LessSafeKey,
     progress_tx: Option<Sender<u8>>,
 ) -> anyhow::Result<()> {
-    let is_folder = file_path.is_dir();
-    let metadata = tokio::fs::metadata(file_path).await?;
-    let size = metadata.len();
+    let meta = Metadata::from_path(file_path, None).await?;
 
-    let relative_path = file_path
-        .file_name()
-        .ok_or_else(|| anyhow::anyhow!("Invalid file/folder name"))?
-        .to_string_lossy()
-        .to_string();
+    println!(
+        "Sending: {} ({})",
+        meta.relative_path,
+        format_size(meta.size, BINARY)
+    );
 
-    println!("Sending: {} ({})", relative_path, format_size(size, BINARY));
+    meta.write(stream).await?;
 
-    send_metadata(stream, &relative_path, is_folder, size).await?;
-
-    if is_folder {
-        send_folder(stream, file_path, key, progress_tx).await?;
-    } else {
-        let mut file = File::open(file_path).await?;
-        if check_duplicate(stream, &mut file).await? {
-            println!("Recipient already has this file, skipping.");
-            return Ok(());
-        }
-        encrypt_and_send(stream, file, size, key, progress_tx).await?;
+    let mut file = File::open(file_path).await?;
+    if check_duplicate(stream, &mut file).await? {
+        println!("Recipient already has this file, skipping.");
+        return Ok(());
     }
+    let mut progress = progress::Progress::new(meta.size, progress_tx);
+    encrypt_and_send(stream, file, key, &mut progress).await?;
 
     Ok(())
 }
@@ -149,24 +117,22 @@ pub async fn send_folder(
         let mut entries = tokio::fs::read_dir(current_dir).await?;
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
-            let metadata = tokio::fs::metadata(&path).await?;
+            let meta = Metadata::from_path(&path, Some(base_path)).await?;
 
-            if metadata.is_dir() {
+            if meta.transfer_type == crate::metadata::Type::Folder {
                 Box::pin(send_recursive(stream, &path, base_path, key, progress_tx)).await?;
             } else {
-                let size = metadata.len();
-                let filename = path
-                    .strip_prefix(base_path)
-                    .unwrap_or(&path)
-                    .to_string_lossy()
-                    .to_string();
+                println!(
+                    "Sending: {} ({})",
+                    meta.relative_path,
+                    format_size(meta.size, BINARY)
+                );
 
-                println!("Sending: {} ({})", filename, format_size(size, BINARY));
-
-                send_metadata(stream, &filename, false, size).await?;
+                meta.write(stream).await?;
 
                 let file = File::open(&path).await?;
-                encrypt_and_send(stream, file, size, key, progress_tx.clone()).await?;
+                let mut progress = progress::Progress::new(meta.size, progress_tx.clone());
+                encrypt_and_send(stream, file, key, &mut progress).await?;
             }
         }
         Ok(())
@@ -177,6 +143,23 @@ pub async fn send_folder(
     // Send end signal (empty path)
     stream.write_u64(0).await?;
     stream.flush().await?;
+
+    Ok(())
+}
+
+pub async fn send(
+    stream: &mut dyn NetworkStream,
+    file_path: &Path,
+    key: &aead::LessSafeKey,
+    progress_tx: Option<Sender<u8>>,
+) -> anyhow::Result<()> {
+    let meta = Metadata::from_path(file_path, None).await?;
+
+    if meta.transfer_type == crate::metadata::Type::Folder {
+        send_folder(stream, file_path, key, progress_tx).await?;
+    } else {
+        send_file(stream, file_path, key, progress_tx).await?;
+    }
 
     Ok(())
 }
