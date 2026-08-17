@@ -8,13 +8,16 @@ use tokio::{
     sync::mpsc::Sender,
 };
 
-async fn receive_metadata(stream: &mut dyn NetworkStream) -> anyhow::Result<(String, u64)> {
-    let filename_len = stream.read_u64().await? as usize;
-    let mut filename_bytes = vec![0; filename_len];
-    stream.read_exact(&mut filename_bytes).await?;
-    let filename = String::from_utf8_lossy(&filename_bytes).to_string();
-    let file_size = stream.read_u64().await?;
-    Ok((filename, file_size))
+/// Receive top-level metadata: relative path, is_folder flag, and total size.
+async fn receive_metadata(stream: &mut dyn NetworkStream) -> anyhow::Result<(String, bool, u64)> {
+    let path_len = stream.read_u64().await? as usize;
+    let mut path_bytes = vec![0; path_len];
+    stream.read_exact(&mut path_bytes).await?;
+    let relative_path = String::from_utf8(path_bytes)
+        .map_err(|e| anyhow::anyhow!("Invalid UTF-8 in path: {}", e))?;
+    let is_folder = stream.read_u64().await? == 1;
+    let size = stream.read_u64().await?;
+    Ok((relative_path, is_folder, size))
 }
 
 async fn check_duplicate(stream: &mut dyn NetworkStream, file: &mut File) -> anyhow::Result<bool> {
@@ -79,13 +82,43 @@ async fn decrypt_and_save(
     Ok(())
 }
 
-pub async fn receive_file(
+/// Top-level receive: reads metadata, dispatches to receive_file or
+/// receive_folder.
+pub async fn receive(
     stream: &mut dyn NetworkStream,
     output_dir: &Path,
     key: &aead::LessSafeKey,
     progress_tx: Option<Sender<u8>>,
 ) -> anyhow::Result<()> {
-    let (filename, file_size) = receive_metadata(stream).await?;
+    let (relative_path, is_folder, file_size) = receive_metadata(stream).await?;
+    println!("Receiving: {}", relative_path);
+
+    if is_folder {
+        let folder_path = output_dir.join(&relative_path);
+        receive_folder(stream, &folder_path, key, progress_tx).await?;
+    } else {
+        receive_file(
+            stream,
+            output_dir,
+            &relative_path,
+            file_size,
+            key,
+            progress_tx,
+        )
+        .await?;
+    }
+
+    Ok(())
+}
+
+pub async fn receive_file(
+    stream: &mut dyn NetworkStream,
+    output_dir: &Path,
+    filename: &str,
+    file_size: u64,
+    key: &aead::LessSafeKey,
+    progress_tx: Option<Sender<u8>>,
+) -> anyhow::Result<()> {
     println!(
         "Receiving: {} ({})",
         filename,
@@ -93,7 +126,7 @@ pub async fn receive_file(
     );
 
     let mut full_path = output_dir.to_path_buf();
-    full_path.push(&filename);
+    full_path.push(filename);
 
     // Check if perform duplicate check
     if let Ok(metadata) = tokio::fs::metadata(&full_path).await
@@ -139,26 +172,26 @@ pub async fn receive_folder(
 
     let mut file_count = 0u64;
     loop {
-        // Read filename
-        let filename_len = stream.read_u64().await? as usize;
-        if filename_len == 0 {
+        // Read relative path
+        let path_len = stream.read_u64().await? as usize;
+        if path_len == 0 {
             break;
         }
-        let mut filename_bytes = vec![0; filename_len];
-        stream.read_exact(&mut filename_bytes).await?;
-        let filename = String::from_utf8_lossy(&filename_bytes).to_string();
+        let mut path_bytes = vec![0; path_len];
+        stream.read_exact(&mut path_bytes).await?;
+        let relative_path = String::from_utf8_lossy(&path_bytes).to_string();
 
-        // Read file
-        let file_size = stream.read_u64().await?;
         file_count += 1;
+
+        let file_size = stream.read_u64().await?;
         println!(
             "[{}] {} ({})",
             file_count,
-            filename,
+            relative_path,
             format_size(file_size, BINARY)
         );
 
-        let mut full_path = folder_path.join(&filename);
+        let mut full_path = folder_path.join(&relative_path);
 
         // Create parent directories
         if let Some(parent) = full_path.parent() {

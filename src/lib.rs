@@ -2,6 +2,7 @@ pub mod mdns;
 mod receive;
 pub mod relay;
 pub mod send;
+pub mod session;
 pub mod utils;
 
 use libp2p::{Multiaddr, PeerId};
@@ -171,18 +172,14 @@ pub async fn run_receiver(
     peer_id_tx: Option<Sender<String>>,
     mdns_tx: Option<tokio::sync::oneshot::Sender<ServiceDaemon>>,
 ) -> anyhow::Result<()> {
-    let (mut stream, mdns_daemon) =
+    let (stream, mdns_daemon) =
         establish_connection(&connection_mode, port, peer_id_tx, mdns_tx).await?;
 
-    let (key, relative_path, is_folder) =
-        utils::receive_handshake(stream.as_mut(), VERSION, password).await?;
+    let mut session = session::Session::from_boxed(stream);
+    let key = session.handshake(VERSION, password, session::Role::Receiver).await?;
+    let mut stream = session.into_inner();
 
-    if is_folder {
-        let folder_path = output_dir.join(&relative_path);
-        receive::receive_folder(stream.as_mut(), &folder_path, &key, progress_tx).await?;
-    } else {
-        receive::receive_file(stream.as_mut(), output_dir, &key, progress_tx).await?;
-    }
+    receive::receive(stream.as_mut(), output_dir, &key, progress_tx).await?;
 
     println!("\nTransfer complete!");
 
@@ -206,31 +203,14 @@ pub async fn run_sender(
     peer_id_tx: Option<Sender<String>>,
     mdns_tx: Option<tokio::sync::oneshot::Sender<ServiceDaemon>>,
 ) -> anyhow::Result<()> {
-    let is_folder = file_path.is_dir();
-
-    let relative_path = file_path
-        .file_name()
-        .ok_or_else(|| anyhow::anyhow!("Invalid file/folder name"))?
-        .to_string_lossy()
-        .to_string();
-
-    let (mut stream, mdns_daemon) =
+    let (stream, mdns_daemon) =
         establish_connection(&connection_mode, port, peer_id_tx, mdns_tx).await?;
 
-    let key = utils::send_handshake(
-        stream.as_mut(),
-        VERSION,
-        password,
-        &relative_path,
-        is_folder,
-    )
-    .await?;
+    let mut session = session::Session::from_boxed(stream);
+    let key = session.handshake(VERSION, password, session::Role::Sender).await?;
+    let mut stream = session.into_inner();
 
-    if is_folder {
-        send::send_folder(stream.as_mut(), file_path, &key, progress_tx).await?;
-    } else {
-        send::send_file(stream.as_mut(), file_path, &key, progress_tx).await?;
-    }
+    send::send(stream.as_mut(), file_path, &key, progress_tx).await?;
 
     println!("\nTransfer complete!");
 
@@ -250,14 +230,6 @@ pub async fn run_sender_persistent(
     port: u16,
     progress_tx: Option<Sender<u8>>,
 ) -> anyhow::Result<()> {
-    let is_folder = file_path.is_dir();
-
-    let relative_path = file_path
-        .file_name()
-        .ok_or_else(|| anyhow::anyhow!("Invalid file/folder name"))?
-        .to_string_lossy()
-        .to_string();
-
     let listener = utils::create_listener(port)?;
     let _mdns_daemon = mdns::advertise_service(port)?;
 
@@ -271,19 +243,15 @@ pub async fn run_sender_persistent(
 
         println!("Listening on [::]:{} (IPv4/IPv6 dual-stack)...", port);
         println!("Waiting for peer to connect...\n");
-        let (mut stream, socket_addr) = listener.accept().await?;
+        let (stream, socket_addr) = listener.accept().await?;
         println!("Connection accepted from {}\n", socket_addr);
 
         let result = async {
-            let key =
-                utils::send_handshake(&mut stream, VERSION, password, &relative_path, is_folder)
-                    .await?;
+            let mut session = session::Session::new(stream);
+            let key = session.handshake(VERSION, password, session::Role::Sender).await?;
+            let mut stream = session.into_inner();
 
-            if is_folder {
-                send::send_folder(&mut stream, file_path, &key, progress_tx.clone()).await?;
-            } else {
-                send::send_file(&mut stream, file_path, &key, progress_tx.clone()).await?;
-            }
+            send::send(&mut stream, file_path, &key, progress_tx.clone()).await?;
 
             println!("\nTransfer complete!");
 

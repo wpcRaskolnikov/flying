@@ -1,35 +1,17 @@
-use crate::NetworkStream;
-use ring::{digest, hkdf, hmac};
+use ring::digest;
 use socket2::{Domain, Protocol, Socket, Type};
-use spake2::{Ed25519Group, Identity, Password, Spake2};
 use std::io::{self, Write};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use tokio::{
     fs::File,
-    io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
+    io::{AsyncReadExt, AsyncSeekExt},
     net::TcpListener,
     sync::mpsc::Sender,
 };
-const CHUNK_SIZE: usize = 1_048_576;
-const SPAKE2_MSG_SIZE: usize = 33;
-const HMAC_TAG_SIZE: usize = 32;
-const KEY_SIZE: usize = 32;
-const SHARED_SECRET_SIZE: usize = 32;
-const MODE_RECEIVE: u64 = 0;
-const MODE_SEND: u64 = 1;
-
-struct MyKeyType(usize);
-
-impl hkdf::KeyType for MyKeyType {
-    fn len(&self) -> usize {
-        self.0
-    }
-}
 
 pub async fn hash_file(file: &mut File) -> io::Result<digest::Digest> {
-    file.seek(std::io::SeekFrom::Start(0)).await?;
-
+    const CHUNK_SIZE: usize = 1_048_576;
     let mut context = digest::Context::new(&digest::SHA256);
     let mut buffer = vec![0u8; CHUNK_SIZE];
 
@@ -83,145 +65,6 @@ impl ProgressTracker {
 
         Ok(())
     }
-}
-
-pub async fn version_handshake(stream: &mut dyn NetworkStream, version: u64) -> anyhow::Result<()> {
-    stream.write_u64(version).await?;
-    let peer_version = stream.read_u64().await?;
-
-    if peer_version != version {
-        println!(
-            "Warning: Version mismatch (local: {}, peer: {})",
-            version, peer_version
-        );
-    }
-
-    Ok(())
-}
-
-pub async fn mode_handshake(stream: &mut dyn NetworkStream, mode: u64) -> anyhow::Result<()> {
-    stream.write_u64(mode).await?;
-    let peer_mode = stream.read_u64().await?;
-
-    if peer_mode == mode {
-        anyhow::bail!("Mode mismatch: both sides in same mode");
-    }
-
-    Ok(())
-}
-
-pub async fn pake_handshake(
-    stream: &mut dyn NetworkStream,
-    password: &str,
-    is_receiver: bool,
-) -> anyhow::Result<[u8; SHARED_SECRET_SIZE]> {
-    let (state, outbound_msg) = if is_receiver {
-        Spake2::<Ed25519Group>::start_b(
-            &Password::new(password),
-            &Identity::new(b"sender"),
-            &Identity::new(b"receiver"),
-        )
-    } else {
-        Spake2::<Ed25519Group>::start_a(
-            &Password::new(password),
-            &Identity::new(b"sender"),
-            &Identity::new(b"receiver"),
-        )
-    };
-
-    stream.write_all(&outbound_msg).await?;
-    stream.flush().await?;
-
-    let mut inbound_msg = vec![0u8; SPAKE2_MSG_SIZE];
-    stream.read_exact(&mut inbound_msg).await?;
-
-    let shared_secret: [u8; SHARED_SECRET_SIZE] = state
-        .finish(&inbound_msg)
-        .map_err(|_| anyhow::anyhow!("PAKE failed: incorrect password or protocol error"))?
-        .try_into()
-        .map_err(|_| anyhow::anyhow!("Invalid shared secret length"))?;
-
-    // Derive encryption key using HKDF
-    let salt = hkdf::Salt::new(hkdf::HKDF_SHA256, b"flying-v5");
-    let prk = salt.extract(&shared_secret);
-
-    let aead_info: &[&[u8]] = &[b"aead-key"];
-    let mut aead_key = [0u8; KEY_SIZE];
-    prk.expand(aead_info, MyKeyType(KEY_SIZE))
-        .map_err(|_| anyhow::anyhow!("HKDF expand failed"))?
-        .fill(&mut aead_key)
-        .map_err(|_| anyhow::anyhow!("HKDF key derivation failed"))?;
-
-    // Key confirmation using HMAC
-    let hmac_info: &[&[u8]] = &[b"hmac-key"];
-    let mut hmac_key_bytes = [0u8; KEY_SIZE];
-    prk.expand(hmac_info, MyKeyType(KEY_SIZE))
-        .map_err(|_| anyhow::anyhow!("HKDF expand failed"))?
-        .fill(&mut hmac_key_bytes)
-        .map_err(|_| anyhow::anyhow!("HKDF key derivation failed"))?;
-
-    let hmac_key = hmac::Key::new(hmac::HMAC_SHA256, &hmac_key_bytes);
-
-    let (our_role, peer_role): (&[u8], &[u8]) = if is_receiver {
-        (b"receiver", b"sender")
-    } else {
-        (b"sender", b"receiver")
-    };
-
-    let our_tag = hmac::sign(&hmac_key, our_role);
-    stream.write_all(our_tag.as_ref()).await?;
-    stream.flush().await?;
-
-    let mut peer_tag = vec![0u8; HMAC_TAG_SIZE];
-    stream.read_exact(&mut peer_tag).await?;
-
-    hmac::verify(&hmac_key, peer_role, &peer_tag)
-        .map_err(|_| anyhow::anyhow!("Key confirmation failed: password mismatch"))?;
-
-    Ok(aead_key)
-}
-
-pub async fn send_handshake(
-    stream: &mut dyn NetworkStream,
-    version: u64,
-    password: &str,
-    relative_path: &str,
-    is_folder: bool,
-) -> anyhow::Result<ring::aead::LessSafeKey> {
-    version_handshake(stream, version).await?;
-    mode_handshake(stream, MODE_SEND).await?;
-    let key_bytes = pake_handshake(stream, password, false).await?;
-
-    stream.write_u64(relative_path.len() as u64).await?;
-    stream.write_all(relative_path.as_bytes()).await?;
-    stream.write_u64(u64::from(is_folder)).await?;
-    stream.flush().await?;
-
-    let unbound_key = ring::aead::UnboundKey::new(&ring::aead::AES_256_GCM, &key_bytes)
-        .map_err(|_| anyhow::anyhow!("Failed to create encryption key"))?;
-    Ok(ring::aead::LessSafeKey::new(unbound_key))
-}
-
-pub async fn receive_handshake(
-    stream: &mut dyn NetworkStream,
-    version: u64,
-    password: &str,
-) -> anyhow::Result<(ring::aead::LessSafeKey, String, bool)> {
-    version_handshake(stream, version).await?;
-    mode_handshake(stream, MODE_RECEIVE).await?;
-    let key_bytes = pake_handshake(stream, password, true).await?;
-
-    let len = stream.read_u64().await? as usize;
-    let mut bytes = vec![0; len];
-    stream.read_exact(&mut bytes).await?;
-    let relative_path = String::from_utf8_lossy(&bytes).to_string();
-    let is_folder = stream.read_u64().await? == 1;
-
-    let unbound_key = ring::aead::UnboundKey::new(&ring::aead::AES_256_GCM, &key_bytes)
-        .map_err(|_| anyhow::anyhow!("Failed to create decryption key"))?;
-    let key = ring::aead::LessSafeKey::new(unbound_key);
-
-    Ok((key, relative_path, is_folder))
 }
 
 pub fn create_listener(port: u16) -> anyhow::Result<TcpListener> {
