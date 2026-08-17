@@ -5,7 +5,6 @@ mod receive;
 pub mod relay;
 pub mod send;
 pub mod session;
-pub mod utils;
 
 use libp2p::{Multiaddr, PeerId};
 use mdns_sd::ServiceDaemon;
