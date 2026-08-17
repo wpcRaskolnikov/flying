@@ -23,8 +23,6 @@ dist-ssr
 *.sln
 *.sw?
 
-release.sh
-
 # 不忽略 cache
 !.yarn/cache
 
