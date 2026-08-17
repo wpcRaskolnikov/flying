@@ -17,11 +17,20 @@ const KEY_SIZE: usize = 32;
 pub struct Session<S: NetworkStream> {
     stream: S,
     role: Role,
+    key: Option<aead::LessSafeKey>,
 }
 
 impl<S: NetworkStream> Session<S> {
     pub fn new(stream: S, role: Role) -> Self {
-        Self { stream, role }
+        Self {
+            stream,
+            role,
+            key: None,
+        }
+    }
+
+    pub fn key(&self) -> aead::LessSafeKey {
+        self.key.as_ref().expect("handshake not completed").clone()
     }
 
     async fn exchange_version(&mut self, version: u64) -> anyhow::Result<()> {
@@ -144,14 +153,11 @@ impl<S: NetworkStream> Session<S> {
         ))
     }
 
-    pub async fn handshake(
-        &mut self,
-        version: u64,
-        password: &str,
-    ) -> anyhow::Result<aead::LessSafeKey> {
+    pub async fn handshake(&mut self, version: u64, password: &str) -> anyhow::Result<()> {
         self.exchange_version(version).await?;
         self.exchange_mode().await?;
-        self.exchange_secret(password).await
+        self.key = Some(self.exchange_secret(password).await?);
+        Ok(())
     }
 
     pub async fn finish(&mut self) -> anyhow::Result<()> {

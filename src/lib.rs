@@ -17,6 +17,9 @@ use tokio::{
     sync::mpsc::Sender,
 };
 
+use socket2::{Domain, Protocol, Socket, Type};
+use tokio::net::TcpListener;
+
 pub const VERSION: u64 = 5;
 
 pub trait NetworkStream: AsyncRead + AsyncWrite + Send + Unpin {}
@@ -61,6 +64,22 @@ impl ConnectionMode {
             ConnectionMode::AutoDiscover
         }
     }
+}
+
+pub fn create_listener(port: u16) -> anyhow::Result<TcpListener> {
+    let addr = format!("[::]:{}", port).parse::<SocketAddr>()?;
+
+    let socket = Socket::new(Domain::IPV6, Type::STREAM, Some(Protocol::TCP))?;
+    socket.set_only_v6(false)?;
+    socket.set_reuse_address(true)?;
+    socket.bind(&addr.into())?;
+    socket.listen(128)?;
+
+    let std_listener: std::net::TcpListener = socket.into();
+    std_listener.set_nonblocking(true)?;
+    let listener = tokio::net::TcpListener::from_std(std_listener)?;
+
+    Ok(listener)
 }
 
 fn select_service(services: &[mdns::DiscoveredService]) -> Option<&mdns::DiscoveredService> {
@@ -123,7 +142,7 @@ pub async fn establish_connection(
             }
         }
         ConnectionMode::Listen => {
-            let listener = utils::create_listener(port)?;
+            let listener = create_listener(port)?;
             let mdns_daemon = mdns::advertise_service(port)?;
 
             if let Some(tx) = mdns_tx {
@@ -178,9 +197,9 @@ pub async fn run_receiver(
         establish_connection(&connection_mode, port, peer_id_tx, mdns_tx).await?;
 
     let mut session = session::Session::new(stream, session::Role::Receiver);
-    let key = session.handshake(VERSION, password).await?;
+    session.handshake(VERSION, password).await?;
 
-    receive::receive(&mut session, output_dir, &key, progress_tx).await?;
+    receive::receive(&mut session, output_dir, progress_tx).await?;
 
     println!("\nTransfer complete!");
 
@@ -204,9 +223,9 @@ pub async fn run_sender(
         establish_connection(&connection_mode, port, peer_id_tx, mdns_tx).await?;
 
     let mut session = session::Session::new(stream, session::Role::Sender);
-    let key = session.handshake(VERSION, password).await?;
+    session.handshake(VERSION, password).await?;
 
-    send::send(&mut session, file_path, &key, progress_tx).await?;
+    send::send(&mut session, file_path, progress_tx).await?;
 
     println!("\nTransfer complete!");
 
@@ -223,7 +242,7 @@ pub async fn run_sender_persistent(
     port: u16,
     progress_tx: Option<Sender<u8>>,
 ) -> anyhow::Result<()> {
-    let listener = utils::create_listener(port)?;
+    let listener = create_listener(port)?;
     let _mdns_daemon = mdns::advertise_service(port)?;
 
     let mut transfer_count = 0u32;
@@ -241,9 +260,9 @@ pub async fn run_sender_persistent(
 
         let result = async {
             let mut session = session::Session::new(stream, session::Role::Sender);
-            let key = session.handshake(VERSION, password).await?;
+            session.handshake(VERSION, password).await?;
 
-            send::send(&mut session, file_path, &key, progress_tx.clone()).await?;
+            send::send(&mut session, file_path, progress_tx.clone()).await?;
 
             println!("\nTransfer complete!");
 
