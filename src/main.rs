@@ -20,7 +20,7 @@ enum Commands {
         #[arg(short, long, conflicts_with = "connect")]
         listen: bool,
         #[arg(short, long, value_name = "IP", conflicts_with = "relay")]
-        connect: Option<String>,
+        connect: Option<std::net::IpAddr>,
         #[arg(long, value_name = "MULTIADDR", conflicts_with = "connect")]
         relay: Option<Multiaddr>,
         #[arg(long, value_name = "PEER_ID")]
@@ -38,7 +38,7 @@ enum Commands {
         #[arg(short, long, conflicts_with = "connect")]
         listen: bool,
         #[arg(short, long, value_name = "IP", conflicts_with = "relay")]
-        connect: Option<String>,
+        connect: Option<std::net::IpAddr>,
         #[arg(long, value_name = "MULTIADDR", conflicts_with = "connect")]
         relay: Option<Multiaddr>,
         #[arg(long, value_name = "PEER_ID")]

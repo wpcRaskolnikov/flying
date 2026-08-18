@@ -17,12 +17,13 @@ use tokio::net::TcpListener;
 pub use mdns::{DiscoveredService, advertise_service, discover_services};
 pub use session::NetworkStream;
 pub const VERSION: u64 = 5;
+const TRANSFER_SERVICE_NAME: &str = "flying-transfer";
 
 #[derive(Debug, Clone)]
 pub enum ConnectionMode {
     AutoDiscover,
     Listen,
-    Connect(String),
+    Connect(IpAddr),
     RelayListen {
         relay_addr: Multiaddr,
     },
@@ -35,7 +36,7 @@ pub enum ConnectionMode {
 impl ConnectionMode {
     pub fn from_params(
         listen: bool,
-        connect: Option<String>,
+        connect: Option<IpAddr>,
         relay_addr: Option<Multiaddr>,
         remote_peer_id: Option<PeerId>,
     ) -> Self {
@@ -121,16 +122,21 @@ pub async fn establish_connection(
     port: u16,
     peer_id_tx: Option<Sender<String>>,
 ) -> anyhow::Result<Box<dyn NetworkStream>> {
+    async fn connect_to(ip: IpAddr, port: u16) -> anyhow::Result<TcpStream> {
+        let addr = SocketAddr::new(ip, port);
+        println!("Connecting to {}...", addr);
+        let stream = TcpStream::connect(addr).await?;
+        println!("Connected!\n");
+        Ok(stream)
+    }
+
     match mode {
         ConnectionMode::AutoDiscover => {
             println!("Searching for peers on the local network...\n");
-            let services = discover_services("flying-transfer", Duration::from_secs(3))?;
+            let services = discover_services(TRANSFER_SERVICE_NAME, Duration::from_secs(3))?;
 
             if let Some(service) = select_service(&services) {
-                let addr = SocketAddr::new(service.ip, service.port);
-                println!("\nConnecting to {}...", addr);
-                let stream = TcpStream::connect(addr).await?;
-                println!("Connected!\n");
+                let stream = connect_to(service.ip, service.port).await?;
                 Ok(Box::new(stream) as Box<dyn NetworkStream>)
             } else {
                 anyhow::bail!("No peers found on the local network")
@@ -138,20 +144,14 @@ pub async fn establish_connection(
         }
         ConnectionMode::Listen => {
             let listener = create_listener(port)?;
-            let _mdns_guard = advertise_service("flying-transfer", port)?;
-
+            let _mdns_guard = advertise_service(TRANSFER_SERVICE_NAME, port)?;
             println!("Listening on [::]:{} (IPv4/IPv6 dual-stack)...", port);
-            println!("Waiting for peer to connect...\n");
-            let (stream, socket_addr) = listener.accept().await?;
-            println!("Connection accepted from {}\n", socket_addr);
+            let (stream, addr) = listener.accept().await?;
+            println!("Connection accepted from {}\n", addr);
             Ok(Box::new(stream) as Box<dyn NetworkStream>)
         }
         ConnectionMode::Connect(ip) => {
-            let ip: IpAddr = ip.parse()?;
-            let addr = SocketAddr::new(ip, port);
-            println!("Connecting to {}...", addr);
-            let stream = TcpStream::connect(addr).await?;
-            println!("Connected!\n");
+            let stream = connect_to(*ip, port).await?;
             Ok(Box::new(stream) as Box<dyn NetworkStream>)
         }
         ConnectionMode::RelayListen { relay_addr } => {
