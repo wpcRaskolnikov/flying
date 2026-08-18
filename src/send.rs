@@ -56,14 +56,14 @@ async fn encrypt_and_send<S: NetworkStream>(
 
 pub async fn run_sender(
     stream: Box<dyn NetworkStream>,
-    file_path: &Path,
+    path: &Path,
     password: &str,
     progress_tx: Option<Sender<u8>>,
 ) -> anyhow::Result<()> {
     let mut session = Session::new(stream, Role::Sender);
     session.handshake(VERSION, password).await?;
 
-    send(&mut session, file_path, progress_tx).await?;
+    send(&mut session, path, progress_tx).await?;
 
     println!("\nTransfer complete!");
 
@@ -73,7 +73,7 @@ pub async fn run_sender(
 
 pub async fn run_sender_persistent(
     listener: &TcpListener,
-    file_path: &Path,
+    path: &Path,
     password: &str,
     port: u16,
     progress_tx: Option<Sender<u8>>,
@@ -92,7 +92,7 @@ pub async fn run_sender_persistent(
 
         println!("Connection accepted from {}\n", socket_addr);
 
-        let result = run_sender(Box::new(stream), file_path, &password, progress_tx.clone()).await;
+        let result = run_sender(Box::new(stream), path, &password, progress_tx.clone()).await;
         match result {
             Ok(_) => {}
             Err(e) => {

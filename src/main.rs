@@ -17,6 +17,7 @@ struct Cli {
 enum Commands {
     Send {
         file: PathBuf,
+        password: Option<String>,
         #[arg(short, long, conflicts_with = "connect")]
         listen: bool,
         #[arg(short, long, value_name = "IP", conflicts_with = "relay")]
@@ -24,17 +25,17 @@ enum Commands {
         #[arg(long, value_name = "MULTIADDR", conflicts_with = "connect")]
         relay: Option<Multiaddr>,
         #[arg(long, value_name = "PEER_ID")]
-        remote_peer: Option<PeerId>,
-        #[arg(short = 'r', long)]
+        peer: Option<PeerId>,
+        #[arg(short, long)]
         recursive: bool,
         #[arg(short = 'P', long, requires = "listen", conflicts_with = "relay")]
         persistent: bool,
         #[arg(short, long, default_value = "3290")]
         port: u16,
-        password: Option<String>,
     },
 
     Receive {
+        password: Option<String>,
         #[arg(short, long, conflicts_with = "connect")]
         listen: bool,
         #[arg(short, long, value_name = "IP", conflicts_with = "relay")]
@@ -45,7 +46,6 @@ enum Commands {
         remote_peer: Option<PeerId>,
         #[arg(short, long, default_value = "3290")]
         port: u16,
-        password: Option<String>,
         #[arg(short, long, default_value = ".")]
         output: PathBuf,
     },
@@ -123,7 +123,7 @@ async fn main() -> anyhow::Result<()> {
             listen,
             connect,
             relay,
-            remote_peer,
+            peer,
             recursive,
             persistent,
             port,
@@ -144,12 +144,12 @@ async fn main() -> anyhow::Result<()> {
                 std::process::exit(1);
             }
 
-            if relay.is_some() && !listen && remote_peer.is_none() {
-                eprintln!("Error: --remote-peer is required when using --relay without --listen");
+            if relay.is_some() && !listen && peer.is_none() {
+                eprintln!("Error: --peer is required when using --relay without --listen");
                 std::process::exit(1);
             }
 
-            let connection_mode = ConnectionMode::from_params(listen, connect, relay, remote_peer);
+            let connection_mode = ConnectionMode::from_params(listen, connect, relay, peer);
             let password = get_or_prompt_password(&connection_mode, password);
             print_session_info("SEND", &password, &connection_mode, None);
 
@@ -178,7 +178,7 @@ async fn main() -> anyhow::Result<()> {
             }
 
             if relay.is_some() && !listen && remote_peer.is_none() {
-                eprintln!("Error: --remote-peer is required when using --relay without --listen");
+                eprintln!("Error: --peer is required when using --relay without --listen");
                 std::process::exit(1);
             }
 
@@ -191,8 +191,10 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    result.map_err(|e| {
-        eprintln!("Error: {}", e);
+    if let Err(e) = result {
+        eprintln!("Error: {e}");
         std::process::exit(1);
-    })
+    }
+
+    Ok(())
 }
