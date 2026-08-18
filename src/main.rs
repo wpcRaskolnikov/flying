@@ -1,5 +1,7 @@
 use clap::{Parser, Subcommand};
-use flying::{ConnectionMode, run_receiver, run_sender, run_sender_persistent};
+use flying::receive::run_receiver;
+use flying::send::{run_sender, run_sender_persistent};
+use flying::{ConnectionMode, advertise_service, create_listener, establish_connection};
 use libp2p::{Multiaddr, PeerId};
 use std::path::PathBuf;
 
@@ -88,9 +90,13 @@ fn print_session_info(
 }
 
 fn get_or_prompt_password(connection_mode: &ConnectionMode, password: Option<String>) -> String {
+    fn generate_password() -> String {
+        petname::petname(3, "-").unwrap_or_else(|| "flying-transfer-secret".to_string())
+    }
+
     match connection_mode {
         ConnectionMode::Listen | ConnectionMode::RelayListen { .. } => {
-            password.unwrap_or_else(|| flying::generate_password())
+            password.unwrap_or_else(|| generate_password())
         }
         ConnectionMode::AutoDiscover
         | ConnectionMode::Connect(_)
@@ -104,14 +110,14 @@ fn get_or_prompt_password(connection_mode: &ConnectionMode, password: Option<Str
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> anyhow::Result<()> {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .try_init();
 
     let cli = Cli::parse();
 
-    match cli.command {
+    let result = match cli.command {
         Commands::Send {
             file,
             listen,
@@ -147,15 +153,13 @@ async fn main() {
             let password = get_or_prompt_password(&connection_mode, password);
             print_session_info("SEND", &password, &connection_mode, None);
 
-            let result = if persistent {
-                run_sender_persistent(&file, &password, port, None).await
+            if persistent {
+                let listener = create_listener(port)?;
+                let _mdns_daemon = advertise_service("flying-transfer", port)?;
+                run_sender_persistent(&listener, &file, &password, port, None).await
             } else {
-                run_sender(&file, &password, connection_mode, port, None, None, None).await
-            };
-
-            if let Err(e) = result {
-                eprintln!("Error: {}", e);
-                std::process::exit(1);
+                let stream = establish_connection(&connection_mode, port, None).await?;
+                run_sender(stream, &file, &password, None).await
             }
         }
 
@@ -182,12 +186,13 @@ async fn main() {
             let password = get_or_prompt_password(&connection_mode, password);
             print_session_info("RECEIVE", &password, &connection_mode, Some(&output));
 
-            if let Err(e) =
-                run_receiver(&output, &password, connection_mode, port, None, None, None).await
-            {
-                eprintln!("Error: {}", e);
-                std::process::exit(1);
-            }
+            let stream = establish_connection(&connection_mode, port, None).await?;
+            run_receiver(stream, &password, &output, None).await
         }
-    }
+    };
+
+    result.map_err(|e| {
+        eprintln!("Error: {}", e);
+        std::process::exit(1);
+    })
 }

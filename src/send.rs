@@ -1,20 +1,21 @@
-use crate::NetworkStream;
+use crate::VERSION;
 use crate::metadata::{Metadata, Type};
-use crate::progress;
-use crate::session::Session;
+use crate::progress::Progress;
+use crate::session::{NetworkStream, Role, Session};
 use humansize::{BINARY, format_size};
 use ring::{aead, rand};
 use std::path::Path;
 use tokio::{
     fs::File,
     io::{AsyncReadExt, AsyncWriteExt},
+    net::TcpListener,
     sync::mpsc::Sender,
 };
 
 async fn encrypt_and_send<S: NetworkStream>(
     session: &mut Session<S>,
     mut file: File,
-    progress: &mut progress::Progress,
+    progress: &mut Progress,
 ) -> anyhow::Result<()> {
     const CHUNK_SIZE: usize = 1_048_576;
     let mut buffer = vec![0u8; CHUNK_SIZE];
@@ -53,6 +54,73 @@ async fn encrypt_and_send<S: NetworkStream>(
     Ok(())
 }
 
+pub async fn run_sender(
+    stream: Box<dyn NetworkStream>,
+    file_path: &Path,
+    password: &str,
+    progress_tx: Option<Sender<u8>>,
+) -> anyhow::Result<()> {
+    let mut session = Session::new(stream, Role::Sender);
+    session.handshake(VERSION, password).await?;
+
+    send(&mut session, file_path, progress_tx).await?;
+
+    println!("\nTransfer complete!");
+
+    session.finish().await?;
+    Ok(())
+}
+
+pub async fn run_sender_persistent(
+    listener: &TcpListener,
+    file_path: &Path,
+    password: &str,
+    port: u16,
+    progress_tx: Option<Sender<u8>>,
+) -> anyhow::Result<()> {
+    let mut transfer_count = 0u32;
+    loop {
+        transfer_count += 1;
+
+        println!("\n===========================================");
+        println!("Transfer #{}", transfer_count);
+        println!("===========================================");
+        println!("Listening on [::]:{} (IPv4/IPv6 dual-stack)...", port);
+        println!("Waiting for peer to connect...\n");
+
+        let (stream, socket_addr) = listener.accept().await?;
+
+        println!("Connection accepted from {}\n", socket_addr);
+
+        let result = run_sender(Box::new(stream), file_path, &password, progress_tx.clone()).await;
+        match result {
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("\nTransfer error: {}", e);
+            }
+        }
+
+        println!("\nWaiting for next connection...");
+    }
+}
+
+pub async fn send<S: NetworkStream>(
+    session: &mut Session<S>,
+    path: &Path,
+    progress_tx: Option<Sender<u8>>,
+) -> anyhow::Result<()> {
+    let meta = Metadata::from_path(path, None).await?;
+    match meta.transfer_type {
+        Type::Folder => {
+            send_folder(session, path, progress_tx).await?;
+        }
+        Type::File => {
+            send_file(session, path, None, progress_tx).await?;
+        }
+    }
+    Ok(())
+}
+
 pub async fn send_file<S: NetworkStream>(
     session: &mut Session<S>,
     file_path: &Path,
@@ -69,7 +137,7 @@ pub async fn send_file<S: NetworkStream>(
 
     let file = File::open(file_path).await?;
 
-    let mut progress = progress::Progress::new(meta.size, progress_tx);
+    let mut progress = Progress::new(meta.size, progress_tx);
     encrypt_and_send(session, file, &mut progress).await?;
 
     Ok(())
@@ -105,22 +173,5 @@ pub async fn send_folder<S: NetworkStream>(
     send_recursive(session, folder_path, folder_path, &progress_tx).await?;
     session.write_u64(0).await?;
     session.flush().await?;
-    Ok(())
-}
-
-pub async fn send<S: NetworkStream>(
-    session: &mut Session<S>,
-    path: &Path,
-    progress_tx: Option<Sender<u8>>,
-) -> anyhow::Result<()> {
-    let meta = Metadata::from_path(path, None).await?;
-    match meta.transfer_type {
-        Type::Folder => {
-            send_folder(session, path, progress_tx).await?;
-        }
-        Type::File => {
-            send_file(session, path, None, progress_tx).await?;
-        }
-    }
     Ok(())
 }

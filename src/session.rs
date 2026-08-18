@@ -1,9 +1,11 @@
-use crate::NetworkStream;
 use ring::{aead, hkdf, hmac};
 use spake2::{Ed25519Group, Identity, Password, Spake2};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+
+pub trait NetworkStream: AsyncRead + AsyncWrite + Send + Unpin {}
+impl<T> NetworkStream for T where T: AsyncRead + AsyncWrite + Send + Unpin {}
 
 #[derive(Clone, Copy)]
 pub enum Role {

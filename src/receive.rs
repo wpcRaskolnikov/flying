@@ -1,7 +1,7 @@
-use crate::NetworkStream;
+use crate::VERSION;
 use crate::metadata::{Metadata, Type};
-use crate::progress;
-use crate::session::Session;
+use crate::progress::Progress;
+use crate::session::{NetworkStream, Role, Session};
 use humansize::{BINARY, format_size};
 use ring::aead;
 use std::path::{Path, PathBuf};
@@ -41,7 +41,7 @@ async fn create_file(file_path: &Path) -> anyhow::Result<File> {
 async fn decrypt_and_save<S: NetworkStream>(
     session: &mut Session<S>,
     file: &mut File,
-    progress: &mut progress::Progress,
+    progress: &mut Progress,
 ) -> anyhow::Result<()> {
     async fn read_packet<S: NetworkStream>(
         session: &mut Session<S>,
@@ -81,6 +81,23 @@ async fn decrypt_and_save<S: NetworkStream>(
     Ok(())
 }
 
+pub async fn run_receiver(
+    stream: Box<dyn NetworkStream>,
+    password: &str,
+    output_dir: &Path,
+    progress_tx: Option<Sender<u8>>,
+) -> anyhow::Result<()> {
+    let mut session = Session::new(stream, Role::Receiver);
+    session.handshake(VERSION, password).await?;
+
+    receive(&mut session, output_dir, progress_tx).await?;
+
+    println!("\nTransfer complete!");
+
+    session.finish().await?;
+    Ok(())
+}
+
 pub async fn receive<S: NetworkStream>(
     session: &mut Session<S>,
     output_dir: &Path,
@@ -113,7 +130,7 @@ pub async fn receive_file<S: NetworkStream>(
         format_size(file_size, BINARY)
     );
 
-    let mut progress = progress::Progress::new(file_size, progress_tx);
+    let mut progress = Progress::new(file_size, progress_tx);
     let mut out_file = create_file(file_path).await?;
     decrypt_and_save(session, &mut out_file, &mut progress).await?;
 
