@@ -112,7 +112,9 @@ pub async fn send<S: NetworkStream>(
     let meta = Metadata::from_path(path, None).await?;
     match meta.transfer_type {
         Type::Folder => {
-            send_folder(session, path, progress_tx).await?;
+            send_folder(session, path, None, progress_tx).await?;
+            session.write_u64(0).await?;
+            session.flush().await?;
         }
         Type::File => {
             send_file(session, path, None, progress_tx).await?;
@@ -124,7 +126,7 @@ pub async fn send<S: NetworkStream>(
 pub async fn send_file<S: NetworkStream>(
     session: &mut Session<S>,
     file_path: &Path,
-    base_path: Option<&Path>,
+    base_path: Option<&str>,
     progress_tx: Option<Sender<u8>>,
 ) -> anyhow::Result<()> {
     let meta = Metadata::from_path(file_path, base_path).await?;
@@ -146,36 +148,24 @@ pub async fn send_file<S: NetworkStream>(
 pub async fn send_folder<S: NetworkStream>(
     session: &mut Session<S>,
     folder_path: &Path,
+    base_path: Option<&str>,
     progress_tx: Option<Sender<u8>>,
 ) -> anyhow::Result<()> {
-    async fn send_recursive<S: NetworkStream>(
-        session: &mut Session<S>,
-        current_dir: &Path,
-        base_path: &Path,
-        progress_tx: &Option<Sender<u8>>,
-    ) -> anyhow::Result<()> {
-        let meta = Metadata::from_path(current_dir, Some(base_path)).await?;
-        meta.write(session).await?;
+    let meta = Metadata::from_path(folder_path, base_path).await?;
+    meta.write(session).await?;
 
-        let mut entries = tokio::fs::read_dir(current_dir).await?;
-        while let Some(entry) = entries.next_entry().await? {
-            let path = entry.path();
-            let entry_meta = Metadata::from_path(&path, Some(base_path)).await?;
-            match entry_meta.transfer_type {
-                Type::Folder => {
-                    Box::pin(send_recursive(session, &path, base_path, progress_tx)).await?;
-                }
-                Type::File => {
-                    send_file(session, &path, Some(base_path), progress_tx.clone()).await?;
-                }
+    let mut entries = tokio::fs::read_dir(folder_path).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        let entry_meta = Metadata::from_path(&entry.path(), base_path).await?;
+        match entry_meta.transfer_type {
+            Type::Folder => {
+                Box::pin(send_folder(session, &entry.path(), Some(&meta.relative_path), progress_tx.clone())).await?;
+            }
+            Type::File => {
+                send_file(session, &entry.path(), Some(&meta.relative_path), progress_tx.clone()).await?;
             }
         }
-        Ok(())
     }
 
-    let base_path = folder_path.parent().unwrap_or(folder_path);
-    send_recursive(session, folder_path, base_path, &progress_tx).await?;
-    session.write_u64(0).await?;
-    session.flush().await?;
     Ok(())
 }

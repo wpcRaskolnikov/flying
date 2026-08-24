@@ -149,16 +149,16 @@ async fn run_send_android(
     let mut session = Session::new(stream, Role::Sender);
     session.handshake(flying::VERSION, password).await?;
 
-    let result = if metadata.is_dir() {
-        let folder_name = api.get_name(uri).await?;
-        send_folder_android(app, &mut session, uri, &folder_name, progress_tx).await
+    if metadata.is_dir() {
+        send_folder_android(app, &mut session, uri, None, progress_tx).await;
+        session.write_u64(0).await?;
+        session.flush().await?;
     } else {
-        send_file_android(app, &mut session, uri, progress_tx).await
-    };
-
+        send_file_android(app, &mut session, uri, None, progress_tx).await?;
+    }
     session.finish().await?;
 
-    result
+    Ok(())
 }
 
 #[cfg(target_os = "android")]
@@ -166,18 +166,21 @@ async fn send_file_android(
     app: &tauri::AppHandle,
     session: &mut Session<Box<dyn NetworkStream>>,
     uri: &FileUri,
+    base_path: Option<&str>,
     progress_tx: Option<mpsc::Sender<u8>>,
 ) -> anyhow::Result<()> {
     let api = app.android_fs_async();
 
-    let file_name = api.get_name(uri).await?;
-
     let source_file = api.open_file_readable(uri).await?;
-
     let file_size = api.get_metadata(uri).await?.len();
 
+    let file_name = api.get_name(uri).await?;
+    let relative_path = match base_path {
+        Some(base) => format!("{}/{}", base, file_name),
+        None => file_name,
+    };
     Metadata {
-        relative_path: file_name,
+        relative_path,
         transfer_type: metadata::Type::File,
         size: file_size,
     }
@@ -196,58 +199,49 @@ async fn send_folder_android(
     app: &tauri::AppHandle,
     session: &mut Session<Box<dyn NetworkStream>>,
     uri: &FileUri,
-    folder_name: &str,
+    base_path: Option<&str>,
     progress_tx: Option<mpsc::Sender<u8>>,
 ) -> anyhow::Result<()> {
-    async fn send_recursive(
-        app: &tauri::AppHandle,
-        session: &mut Session<Box<dyn NetworkStream>>,
-        dir_uri: &FileUri,
-        base_path: &str,
-        progress_tx: &Option<mpsc::Sender<u8>>,
-    ) -> anyhow::Result<()> {
-        let api = app.android_fs_async();
+    let api = app.android_fs_async();
 
-        Metadata {
-            relative_path: base_path.to_string(),
-            transfer_type: flying::metadata::Type::Folder,
-            size: 0,
-        }
-        .write(session)
-        .await?;
+    let dir_name = api.get_name(uri).await?;
+    let relative_path = match base_path {
+        Some(base) => format!("{}/{}", base, dir_name),
+        None => dir_name,
+    };
+    Metadata {
+        relative_path: relative_path.clone(),
+        transfer_type: flying::metadata::Type::Folder,
+        size: 0,
+    }
+    .write(session)
+    .await?;
 
-        let entries = api.read_dir(dir_uri).await?;
-        for entry in entries {
-            match entry {
-                Entry::File { uri, name, len, .. } => {
-                    Metadata {
-                        relative_path: format!("{}/{}", base_path, name),
-                        transfer_type: flying::metadata::Type::File,
-                        size: len,
-                    }
-                    .write(session)
-                    .await?;
-
-                    let file = api.open_file_readable(&uri).await?;
-                    let mut tokio_file = TokioFile::from_std(file);
-                    let mut progress = Progress::new(len, progress_tx.clone());
-                    flying::send::encrypt_and_send(session, &mut tokio_file, &mut progress).await?;
-                }
-                Entry::Dir { uri, name, .. } => {
-                    let sub_path = format!("{}/{}", base_path, name);
-
-                    Box::pin(send_recursive(app, session, &uri, &sub_path, progress_tx)).await?;
-                }
+    let entries = api.read_dir(uri).await?;
+    for entry in entries {
+        match entry {
+            Entry::File { uri, .. } => {
+                send_file_android(
+                    app,
+                    session,
+                    &uri,
+                    Some(&relative_path),
+                    progress_tx.clone(),
+                )
+                .await?;
+            }
+            Entry::Dir { uri, .. } => {
+                Box::pin(send_folder_android(
+                    app,
+                    session,
+                    &uri,
+                    Some(&relative_path),
+                    progress_tx.clone(),
+                ))
+                .await?;
             }
         }
-
-        Ok(())
     }
-
-    send_recursive(app, session, uri, folder_name, &progress_tx).await?;
-
-    session.write_u64(0).await?;
-    session.flush().await?;
 
     Ok(())
 }

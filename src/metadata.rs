@@ -15,19 +15,15 @@ pub struct Metadata {
 }
 
 impl Metadata {
-    pub async fn from_path(path: &Path, base_path: Option<&Path>) -> anyhow::Result<Self> {
+    pub async fn from_path(path: &Path, base_path: Option<&str>) -> anyhow::Result<Self> {
         let fs_meta = tokio::fs::metadata(path).await?;
+        let name = path
+            .file_name()
+            .ok_or_else(|| anyhow::anyhow!("Invalid file/folder name"))?
+            .to_string_lossy();
         let relative_path = match base_path {
-            Some(base) => path
-                .strip_prefix(base)
-                .map_err(|_| anyhow::anyhow!("Path is not under the given base"))?
-                .to_string_lossy()
-                .to_string(),
-            None => path
-                .file_name()
-                .ok_or_else(|| anyhow::anyhow!("Invalid file/folder name"))?
-                .to_string_lossy()
-                .to_string(),
+            Some(base) => format!("{base}/{name}"),
+            None => name.to_string(),
         };
         let transfer_type = if fs_meta.is_dir() {
             Type::Folder
