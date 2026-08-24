@@ -38,7 +38,7 @@ async fn create_file(file_path: &Path) -> anyhow::Result<File> {
     Ok(File::create(resolved).await?)
 }
 
-async fn decrypt_and_save<S: NetworkStream>(
+pub async fn decrypt_and_save<S: NetworkStream>(
     session: &mut Session<S>,
     file: &mut File,
     progress: &mut Progress,
@@ -98,7 +98,7 @@ pub async fn run_receiver(
     Ok(())
 }
 
-async fn receive<S: NetworkStream>(
+pub async fn receive<S: NetworkStream>(
     session: &mut Session<S>,
     output_dir: &Path,
     progress_tx: Option<Sender<u8>>,

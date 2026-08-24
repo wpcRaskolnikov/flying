@@ -1,5 +1,11 @@
 use serde::Serialize;
 
+#[cfg(not(target_os = "android"))]
+use tauri_plugin_dialog::DialogExt;
+
+#[cfg(target_os = "android")]
+use tauri_plugin_android_fs::AndroidFsExt;
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PickedEntity {
@@ -10,8 +16,6 @@ pub struct PickedEntity {
 #[tauri::command]
 #[cfg(target_os = "android")]
 pub async fn pick_file(app: tauri::AppHandle) -> Result<Option<PickedEntity>, String> {
-    use tauri_plugin_android_fs::AndroidFsExt;
-
     let api = app.android_fs_async();
     let uri = api
         .file_picker()
@@ -40,8 +44,6 @@ pub async fn pick_file(app: tauri::AppHandle) -> Result<Option<PickedEntity>, St
 #[tauri::command]
 #[cfg(not(target_os = "android"))]
 pub async fn pick_file(app: tauri::AppHandle) -> Result<Option<PickedEntity>, String> {
-    use tauri_plugin_dialog::DialogExt;
-
     let Some(tauri_plugin_dialog::FilePath::Path(file)) = app.dialog().file().blocking_pick_file()
     else {
         return Ok(None);
@@ -60,8 +62,6 @@ pub async fn pick_file(app: tauri::AppHandle) -> Result<Option<PickedEntity>, St
 #[tauri::command]
 #[cfg(target_os = "android")]
 pub async fn pick_folder(app: tauri::AppHandle) -> Result<Option<PickedEntity>, String> {
-    use tauri_plugin_android_fs::AndroidFsExt;
-
     let api = app.android_fs_async();
     let uri = api
         .file_picker()
@@ -86,8 +86,6 @@ pub async fn pick_folder(app: tauri::AppHandle) -> Result<Option<PickedEntity>, 
 #[tauri::command]
 #[cfg(not(target_os = "android"))]
 pub async fn pick_folder(app: tauri::AppHandle) -> Result<Option<PickedEntity>, String> {
-    use tauri_plugin_dialog::DialogExt;
-
     let Some(tauri_plugin_dialog::FilePath::Path(file)) =
         app.dialog().file().blocking_pick_folder()
     else {

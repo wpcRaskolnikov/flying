@@ -55,22 +55,22 @@ function SendPage() {
     const unlisten = listen<TransferStatusPayload>(
       "send-status-update",
       (event) => {
-        const { status, progress, message, peerId } = event.payload;
+        const { status, data, peerId } = event.payload;
 
         switch (status) {
-          case "Ready":
+          case "ready":
             if (peerId && configModeRef.current === "relay_listen") {
               setConfig((prev) => ({ ...prev, peerId }));
             }
             setIsSending(true);
             setStatus("Waiting for connection...");
             break;
-          case "Sending":
+          case "processing":
             setIsSending(true);
-            setProgress(progress);
-            setStatus(`Sending file... ${progress}%`);
+            setProgress(data as number);
+            setStatus(`Sending file... ${data}%`);
             break;
-          case "Completed":
+          case "completed":
             setIsSending(false);
             setStatus("Send completed!");
             setProgress(100);
@@ -82,11 +82,11 @@ function SendPage() {
               setProgress(0);
             }, 2000);
             break;
-          case "Error":
+          case "error":
             setIsSending(false);
             setStatus("");
             setProgress(0);
-            showSnackbar(message || "An error occurred", "error");
+            showSnackbar((data as string) || "An error occurred", "error");
             break;
         }
       },

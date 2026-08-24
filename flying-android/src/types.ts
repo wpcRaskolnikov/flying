@@ -3,10 +3,11 @@ export type PickedEntity = {
   name: string;
 };
 
+export type TransferStatus = "ready" | "processing" | "completed" | "error";
+
 export type TransferStatusPayload = {
-  status: "Ready" | "Sending" | "Completed" | "Error";
-  progress: number;
-  message?: string;
+  status: TransferStatus;
+  data: number | string | { peerId?: string } | null;
   peerId?: string;
 };
 

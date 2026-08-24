@@ -66,22 +66,22 @@ function ReceivePage() {
     const unlisten = listen<TransferStatusPayload>(
       "receive-status-update",
       (event) => {
-        const { status, progress, message, peerId } = event.payload;
+        const { status, data, peerId } = event.payload;
 
         switch (status) {
-          case "Ready":
+          case "ready":
             if (peerId && configModeRef.current === "relay_listen") {
               setConfig((prev) => ({ ...prev, peerId }));
             }
             setIsReceiving(true);
             setStatus("Waiting for connection...");
             break;
-          case "Sending":
+          case "processing":
             setIsReceiving(true);
-            setProgress(progress);
-            setStatus(`Receiving file... ${progress}%`);
+            setProgress(data as number);
+            setStatus(`Receiving file... ${data}%`);
             break;
-          case "Completed":
+          case "completed":
             setIsReceiving(false);
             setStatus("Receive completed!");
             setProgress(100);
@@ -93,11 +93,11 @@ function ReceivePage() {
               setProgress(0);
             }, 2000);
             break;
-          case "Error":
+          case "error":
             setIsReceiving(false);
             setStatus("");
             setProgress(0);
-            showSnackbar(message || "An error occurred", "error");
+            showSnackbar((data as string) || "An error occurred", "error");
             break;
         }
       },

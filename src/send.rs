@@ -12,7 +12,7 @@ use tokio::{
     sync::mpsc::Sender,
 };
 
-async fn encrypt_and_send<S: NetworkStream>(
+pub async fn encrypt_and_send<S: NetworkStream>(
     session: &mut Session<S>,
     mut file: File,
     progress: &mut Progress,
