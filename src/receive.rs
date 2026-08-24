@@ -98,7 +98,7 @@ pub async fn run_receiver(
     Ok(())
 }
 
-pub async fn receive<S: NetworkStream>(
+async fn receive<S: NetworkStream>(
     session: &mut Session<S>,
     output_dir: &Path,
     progress_tx: Option<Sender<u8>>,
@@ -108,8 +108,7 @@ pub async fn receive<S: NetworkStream>(
     };
     match meta.transfer_type {
         Type::Folder => {
-            let folder_path = output_dir.join(&meta.relative_path);
-            receive_folder(session, &folder_path, progress_tx).await?;
+            receive_folder(session, output_dir, progress_tx).await?;
         }
         Type::File => {
             let file_path = output_dir.join(&meta.relative_path);
@@ -141,20 +140,17 @@ pub async fn receive_file<S: NetworkStream>(
 
 pub async fn receive_folder<S: NetworkStream>(
     session: &mut Session<S>,
-    folder_path: &Path,
+    output_dir: &Path,
     progress_tx: Option<Sender<u8>>,
 ) -> anyhow::Result<()> {
     println!(
-        "Creating folder: {}",
-        folder_path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
+        "Receiving folder: {}",
+        output_dir.file_name().unwrap_or_default().to_string_lossy()
     );
-    fs::create_dir_all(&folder_path).await?;
+    fs::create_dir_all(&output_dir).await?;
 
     while let Some(meta) = Metadata::read(session).await? {
-        let full_path = folder_path.join(&meta.relative_path);
+        let full_path = output_dir.join(&meta.relative_path);
 
         match meta.transfer_type {
             Type::Folder => {

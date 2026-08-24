@@ -1,8 +1,8 @@
 use crate::ConnectionConfig;
-use crate::utils::{ReceiveState, TransferStatusPayload};
+use crate::utils::{ReceiveState, TransferStatus, TransferStatusPayload};
 
+use flying::establish_connection;
 use flying::receive::run_receiver;
-use flying::{ConnectionMode, establish_connection};
 
 use tauri::Emitter;
 
@@ -16,24 +16,6 @@ pub async fn cancel_receive(state: tauri::State<'_, ReceiveState>) -> Result<(),
         let _ = abort_sender.send(());
     }
     Ok(())
-}
-
-fn emit_status(
-    window: &tauri::Window,
-    status: &str,
-    progress: u8,
-    message: Option<String>,
-    peer_id: Option<String>,
-) {
-    let _ = window.emit(
-        "receive-status-update",
-        TransferStatusPayload {
-            status: status.to_string(),
-            progress,
-            message,
-            peer_id,
-        },
-    );
 }
 
 #[tauri::command]
@@ -51,9 +33,8 @@ pub async fn receive_file(
     let (progress_tx, mut progress_rx) = mpsc::channel(32);
     let (peer_id_tx, mut peer_id_rx) = mpsc::channel(1);
 
-    let state_abort = state.abort_handle.clone();
-
     *state.abort_handle.lock().unwrap() = Some(abort_handle);
+    let state_handle = state.abort_handle.clone();
 
     tokio::spawn(async move {
         let output_dir;
@@ -66,23 +47,23 @@ pub async fn receive_file(
             output_dir = PathBuf::from(output_dir_uri);
         }
 
-        let initial_status = match &mode {
-            ConnectionMode::Listen => "Ready",
-            _ => "Connecting",
+        let emit = |payload: TransferStatusPayload| {
+            let _ = window.emit("receive-status-update", payload);
         };
-        emit_status(&window, initial_status, 0, None, None);
+
+        emit(TransferStatusPayload {
+            status: TransferStatus::Ready,
+            peer_id: None,
+        });
 
         let stream = match establish_connection(&mode, port, Some(peer_id_tx)).await {
             Ok(s) => s,
             Err(e) => {
-                emit_status(
-                    &window,
-                    "Error",
-                    0,
-                    Some(format!("Connection failed: {e}")),
-                    None,
-                );
-                *state_abort.lock().unwrap() = None;
+                emit(TransferStatusPayload {
+                    status: TransferStatus::Error(format!("Connection failed: {e}")),
+                    peer_id: None,
+                });
+                *state_handle.lock().unwrap() = None;
                 return;
             }
         };
@@ -92,31 +73,42 @@ pub async fn receive_file(
 
         loop {
             tokio::select! {
-                msg = progress_rx.recv() => {
-                    if let Some(percent) = msg {
-                        emit_status(&window, "Receiving", percent, None, None);
-                    }
+                Some(percent) = progress_rx.recv() => {
+                    emit(TransferStatusPayload {
+                        status: TransferStatus::Processing(percent),
+                        peer_id: None,
+                    });
                 }
-                msg = peer_id_rx.recv() => {
-                    if let Some(peer_id) = msg {
-                        emit_status(&window, "Ready", 0, None, Some(peer_id));
-                    }
+                Some(peer_id) = peer_id_rx.recv() => {
+                    emit(TransferStatusPayload {
+                        status: TransferStatus::Ready,
+                        peer_id: Some(peer_id),
+                    });
                 }
                 res = &mut transfer_fut => {
                     match res {
-                        Ok(_) => emit_status(&window, "Completed", 100, None, None),
-                        Err(e) => emit_status(&window, "Error", 0, Some(format!("Receive error: {e}")), None),
+                        Ok(_) => emit(TransferStatusPayload {
+                            status: TransferStatus::Completed,
+                            peer_id: None,
+                        }),
+                        Err(e) => emit(TransferStatusPayload {
+                            status: TransferStatus::Error(format!("Receive error: {e}")),
+                            peer_id: None,
+                        }),
                     }
                     break;
                 }
                 _ = &mut abort_registration => {
-                    emit_status(&window, "Error", 0, Some("Transfer cancelled".to_string()), None);
+                    emit(TransferStatusPayload {
+                        status: TransferStatus::Error("Transfer cancelled".to_string()),
+                        peer_id: None,
+                    });
                     break;
                 }
             }
         }
 
-        *state_abort.lock().unwrap() = None;
+        *state_handle.lock().unwrap() = None;
     });
 
     Ok(())

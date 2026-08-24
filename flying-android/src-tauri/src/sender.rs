@@ -1,7 +1,5 @@
 use crate::ConnectionConfig;
-use crate::utils::{SendState, TransferStatusPayload};
-
-use std::sync::Arc;
+use crate::utils::{SendState, TransferStatus, TransferStatusPayload};
 
 #[cfg(not(target_os = "android"))]
 use std::path::PathBuf;
@@ -25,24 +23,6 @@ pub async fn cancel_send(state: tauri::State<'_, SendState>) -> Result<(), Strin
     Ok(())
 }
 
-fn emit_status(
-    window: &tauri::Window,
-    status: &str,
-    progress: u8,
-    message: Option<String>,
-    peer_id: Option<String>,
-) {
-    let _ = window.emit(
-        "send-status-update",
-        TransferStatusPayload {
-            status: status.to_string(),
-            progress,
-            message,
-            peer_id,
-        },
-    );
-}
-
 #[tauri::command]
 pub async fn send_file(
     file_uri: String,
@@ -55,26 +35,31 @@ pub async fn send_file(
 ) -> Result<(), String> {
     let mode = config.to_flying_mode()?;
 
-    let (abort_handle, abort_registration) = oneshot::channel::<()>();
+    let (abort_handle, mut abort_registration) = oneshot::channel::<()>();
     let (peer_id_tx, _peer_id_rx) = mpsc::channel(1);
-    let (progress_tx, _progress_rx) = mpsc::channel(32);
-
-    let state_abort = Arc::clone(&state.abort_handle);
+    let (progress_tx, mut progress_rx) = mpsc::channel(32);
 
     *state.abort_handle.lock().unwrap() = Some(abort_handle);
+    let state_handle = state.abort_handle.clone();
 
     tokio::spawn(async move {
-        let initial_status = match &mode {
-            flying::ConnectionMode::Listen => "Ready",
-            _ => "Connecting",
+        let emit = |payload: TransferStatusPayload| {
+            let _ = window.emit("send-status-update", payload);
         };
-        emit_status(&window, initial_status, 0, None, None);
+
+        emit(TransferStatusPayload {
+            status: TransferStatus::Ready,
+            peer_id: None,
+        });
 
         let stream = match flying::establish_connection(&mode, port, Some(peer_id_tx)).await {
             Ok(s) => s,
             Err(e) => {
-                emit_status(&window, "Error", 0, Some(format!("Connection failed: {e}")), None);
-                *state_abort.lock().unwrap() = None;
+                emit(TransferStatusPayload {
+                    status: TransferStatus::Error(format!("Connection failed: {e}")),
+                    peer_id: None,
+                });
+                *state_handle.lock().unwrap() = None;
                 return;
             }
         };
@@ -82,48 +67,68 @@ pub async fn send_file(
         #[cfg(target_os = "android")]
         let android_uri: Option<FileUri> = FileUri::from_json_str(&file_uri).ok();
 
-        tokio::select! {
-            _ = abort_registration => {
-                emit_status(&window, "Error", 0, Some("Transfer cancelled".to_string()), None);
+        #[cfg(target_os = "android")]
+        let transfer_fut: std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<(), String>> + Send>,
+        > = {
+            match android_uri {
+                Some(ref uri) => Box::pin(run_send_android(
+                    &_app,
+                    uri,
+                    &password,
+                    Some(progress_tx),
+                    stream,
+                )),
+                None => Box::pin(async { Err("Failed to parse URI".to_string()) }),
             }
-            res = async {
-                #[cfg(target_os = "android")]
-                {
-                    match android_uri {
-                        Some(ref uri) => {
-                            run_send_android(
-                                &_app,
-                                uri,
-                                &password,
-                                Some(progress_tx),
-                                stream,
-                            )
-                            .await
-                        }
-                        None => Err("Failed to parse URI".to_string()),
-                    }
-                }
-                #[cfg(not(target_os = "android"))]
-                {
-                    let file_path = PathBuf::from(&file_uri);
-                    flying::send::run_sender(
-                        stream,
-                        &file_path,
-                        &password,
-                        Some(progress_tx),
-                    )
+        };
+
+        #[cfg(not(target_os = "android"))]
+        let transfer_fut: std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<(), String>> + Send>,
+        > = {
+            let file_path = PathBuf::from(&file_uri);
+            Box::pin(async move {
+                flying::send::run_sender(stream, &file_path, &password, Some(progress_tx))
                     .await
                     .map_err(|e| format!("Send error: {e}"))
+            })
+        };
+
+        tokio::pin!(transfer_fut);
+
+        loop {
+            tokio::select! {
+                Some(percent) = progress_rx.recv() => {
+                    emit(TransferStatusPayload {
+                        status: TransferStatus::Processing(percent),
+                        peer_id: None,
+                    });
                 }
-            } => {
-                match res {
-                    Ok(_) => emit_status(&window, "Completed", 100, None, None),
-                    Err(e) => emit_status(&window, "Error", 0, Some(e), None),
+                res = &mut transfer_fut => {
+                    match res {
+                        Ok(_) => emit(TransferStatusPayload {
+                            status: TransferStatus::Completed,
+                            peer_id: None,
+                        }),
+                        Err(e) => emit(TransferStatusPayload {
+                            status: TransferStatus::Error(e),
+                            peer_id: None,
+                        }),
+                    }
+                    break;
+                }
+                _ = &mut abort_registration => {
+                    emit(TransferStatusPayload {
+                        status: TransferStatus::Error("Transfer cancelled".to_string()),
+                        peer_id: None,
+                    });
+                    break;
                 }
             }
         }
 
-        *state_abort.lock().unwrap() = None;
+        *state_handle.lock().unwrap() = None;
     });
 
     Ok(())
@@ -274,14 +279,7 @@ async fn send_folder_android(
                         format!("{}/{}", base_path, name)
                     };
 
-                    Box::pin(send_recursive(
-                        app,
-                        session,
-                        &uri,
-                        &sub_path,
-                        progress_tx,
-                    ))
-                    .await?;
+                    Box::pin(send_recursive(app, session, &uri, &sub_path, progress_tx)).await?;
                 }
             }
         }

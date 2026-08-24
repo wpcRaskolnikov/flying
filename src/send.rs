@@ -110,7 +110,6 @@ pub async fn send<S: NetworkStream>(
     progress_tx: Option<Sender<u8>>,
 ) -> anyhow::Result<()> {
     let meta = Metadata::from_path(path, None).await?;
-    meta.write(session).await?;
     match meta.transfer_type {
         Type::Folder => {
             send_folder(session, path, progress_tx).await?;
@@ -174,7 +173,8 @@ pub async fn send_folder<S: NetworkStream>(
         Ok(())
     }
 
-    send_recursive(session, folder_path, folder_path, &progress_tx).await?;
+    let base_path = folder_path.parent().unwrap_or(folder_path);
+    send_recursive(session, folder_path, base_path, &progress_tx).await?;
     session.write_u64(0).await?;
     session.flush().await?;
     Ok(())
