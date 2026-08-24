@@ -110,6 +110,7 @@ pub async fn send<S: NetworkStream>(
     progress_tx: Option<Sender<u8>>,
 ) -> anyhow::Result<()> {
     let meta = Metadata::from_path(path, None).await?;
+    meta.write(session).await?;
     match meta.transfer_type {
         Type::Folder => {
             send_folder(session, path, progress_tx).await?;
@@ -154,10 +155,12 @@ pub async fn send_folder<S: NetworkStream>(
         base_path: &Path,
         progress_tx: &Option<Sender<u8>>,
     ) -> anyhow::Result<()> {
+        let meta = Metadata::from_path(current_dir, Some(base_path)).await?;
+        meta.write(session).await?;
+
         let mut entries = tokio::fs::read_dir(current_dir).await?;
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
-            let meta = Metadata::from_path(&path, Some(base_path)).await?;
             match meta.transfer_type {
                 Type::Folder => {
                     Box::pin(send_recursive(session, &path, base_path, progress_tx)).await?;

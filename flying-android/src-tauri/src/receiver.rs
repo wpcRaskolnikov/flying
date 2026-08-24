@@ -1,19 +1,17 @@
-use crate::sender::ConnectionConfig;
+use crate::ConnectionConfig;
 use crate::utils::{ReceiveState, TransferStatusPayload};
+
+use flying::receive::run_receiver;
+use flying::{ConnectionMode, establish_connection};
 
 use tauri::Emitter;
 
 use std::path::PathBuf;
 
-use tokio::sync::{mpsc, oneshot};
-
-use futures_util::FutureExt;
+use tokio::sync::mpsc;
 
 #[tauri::command]
 pub async fn cancel_receive(state: tauri::State<'_, ReceiveState>) -> Result<(), String> {
-    if let Some(mdns) = state.mdns_daemon.lock().unwrap().take() {
-        let _ = mdns.shutdown();
-    }
     if let Some(abort_sender) = state.abort_handle.lock().unwrap().take() {
         let _ = abort_sender.send(());
     }
@@ -49,15 +47,11 @@ pub async fn receive_file(
 ) -> Result<(), String> {
     let mode = config.to_flying_mode()?;
 
-    let (abort_handle, mut abort_registration) = oneshot::channel::<()>();
-    let (mdns_tx, mdns_rx) = oneshot::channel::<flying::mdns::ServiceDaemon>();
+    let (abort_handle, mut abort_registration) = tokio::sync::oneshot::channel::<()>();
     let (progress_tx, mut progress_rx) = mpsc::channel(32);
     let (peer_id_tx, mut peer_id_rx) = mpsc::channel(1);
 
-    let state_mdns = state.mdns_daemon.clone();
     let state_abort = state.abort_handle.clone();
-
-    let mut mdns_rx = mdns_rx.fuse();
 
     *state.abort_handle.lock().unwrap() = Some(abort_handle);
 
@@ -73,66 +67,56 @@ pub async fn receive_file(
         }
 
         let initial_status = match &mode {
-            flying::ConnectionMode::Listen => "Ready",
-            _ => "Sending",
+            ConnectionMode::Listen => "Ready",
+            _ => "Connecting",
         };
         emit_status(&window, initial_status, 0, None, None);
 
-        let transfer_fut = flying::run_receiver(
-            &output_dir,
-            &password,
-            mode,
-            port,
-            Some(progress_tx),
-            Some(peer_id_tx),
-            Some(mdns_tx),
-        );
-        tokio::pin!(transfer_fut);
+        let stream = match establish_connection(&mode, port, Some(peer_id_tx)).await {
+            Ok(s) => s,
+            Err(e) => {
+                emit_status(
+                    &window,
+                    "Error",
+                    0,
+                    Some(format!("Connection failed: {e}")),
+                    None,
+                );
+                *state_abort.lock().unwrap() = None;
+                return;
+            }
+        };
 
-        let final_result: Result<(), String>;
+        let transfer_fut = run_receiver(stream, &password, &output_dir, Some(progress_tx));
+        tokio::pin!(transfer_fut);
 
         loop {
             tokio::select! {
-                // Progress updates
                 msg = progress_rx.recv() => {
                     if let Some(percent) = msg {
-                        emit_status(&window, "Sending", percent, None, None);
+                        emit_status(&window, "Receiving", percent, None, None);
                     }
                 }
-                // Peer ID received
                 msg = peer_id_rx.recv() => {
                     if let Some(peer_id) = msg {
                         emit_status(&window, "Ready", 0, None, Some(peer_id));
                     }
                 }
-                // Transfer completes
                 res = &mut transfer_fut => {
-                    final_result = res.map_err(|e| format!("Receive error: {e}"));
+                    match res {
+                        Ok(_) => emit_status(&window, "Completed", 100, None, None),
+                        Err(e) => emit_status(&window, "Error", 0, Some(format!("Receive error: {e}")), None),
+                    }
                     break;
                 }
-                // User cancels
                 _ = &mut abort_registration => {
-                    final_result = Err("Transfer cancelled".to_string());
+                    emit_status(&window, "Error", 0, Some("Transfer cancelled".to_string()), None);
                     break;
-                }
-                // Capture mDNS daemon from oneshot
-                Ok(daemon) = &mut mdns_rx => {
-                    *state_mdns.lock().unwrap() = Some(daemon);
                 }
             }
         }
 
-        // Clean up state
         *state_abort.lock().unwrap() = None;
-        if let Some(mdns) = state_mdns.lock().unwrap().take() {
-            let _ = mdns.shutdown();
-        }
-
-        // Emit final status
-        match final_result {
-            Ok(_) => emit_status(&window, "Completed", 100, None, None),
-            Err(e) => emit_status(&window, "Error", 0, Some(e), None),
-        }
     });
 
     Ok(())

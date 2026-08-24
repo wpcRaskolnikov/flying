@@ -1,7 +1,9 @@
 use clap::{Parser, Subcommand};
 use flying::receive::run_receiver;
 use flying::send::{run_sender, run_sender_persistent};
-use flying::{ConnectionMode, advertise_service, create_listener, establish_connection};
+use flying::{
+    ConnectionMode, advertise_service, create_listener, establish_connection, generate_password,
+};
 use libp2p::{Multiaddr, PeerId};
 use std::path::PathBuf;
 
@@ -90,10 +92,6 @@ fn print_session_info(
 }
 
 fn get_or_prompt_password(connection_mode: &ConnectionMode, password: Option<String>) -> String {
-    fn generate_password() -> String {
-        petname::petname(3, "-").unwrap_or_else(|| "flying-transfer-secret".to_string())
-    }
-
     match connection_mode {
         ConnectionMode::Listen | ConnectionMode::RelayListen { .. } => {
             password.unwrap_or_else(|| generate_password())

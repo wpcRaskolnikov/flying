@@ -51,8 +51,11 @@ impl Metadata {
         Ok(())
     }
 
-    pub async fn read(stream: &mut dyn NetworkStream) -> anyhow::Result<Self> {
+    pub async fn read(stream: &mut dyn NetworkStream) -> anyhow::Result<Option<Self>> {
         let path_len = stream.read_u64().await? as usize;
+        if path_len == 0 {
+            return Ok(None);
+        }
         let mut path_bytes = vec![0u8; path_len];
         stream.read_exact(&mut path_bytes).await?;
         let relative_path = String::from_utf8(path_bytes)
@@ -63,10 +66,10 @@ impl Metadata {
             other => anyhow::bail!("Unknown transfer type: {other}"),
         };
         let size = stream.read_u64().await?;
-        Ok(Self {
+        Ok(Some(Self {
             relative_path,
             transfer_type,
             size,
-        })
+        }))
     }
 }

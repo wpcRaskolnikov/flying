@@ -1,4 +1,3 @@
-use flying::mdns::ServiceDaemon;
 use serde::Serialize;
 
 #[cfg(not(target_os = "android"))]
@@ -196,20 +195,17 @@ impl Room {
 #[derive(Default, Clone)]
 pub struct SendState {
     pub abort_handle: Arc<StdMutex<Option<OneshotSender<()>>>>,
-    pub mdns_daemon: Arc<StdMutex<Option<ServiceDaemon>>>,
 }
 
 #[derive(Default, Clone)]
 pub struct ReceiveState {
     pub abort_handle: Arc<StdMutex<Option<OneshotSender<()>>>>,
-    pub mdns_daemon: Arc<StdMutex<Option<ServiceDaemon>>>,
 }
 
 #[derive(Default)]
 pub struct CollabServerState {
     pub room_manager: Arc<RoomManager>,
     pub abort_handle: StdMutex<Option<OneshotSender<()>>>,
-    pub mdns_daemon: StdMutex<Option<ServiceDaemon>>,
 }
 
 #[tauri::command]

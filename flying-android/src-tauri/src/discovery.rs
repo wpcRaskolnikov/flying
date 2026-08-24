@@ -1,7 +1,6 @@
-use flying::mdns::discover_services;
-use std::time::Duration;
-
+use flying::discover_services;
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -14,8 +13,9 @@ pub struct DiscoveredHost {
 
 #[tauri::command]
 pub async fn discover_hosts() -> Result<Vec<DiscoveredHost>, String> {
-    let ft_handle =
-        tokio::task::spawn_blocking(|| discover_services("flying-transfer", Duration::from_secs(3)));
+    let ft_handle = tokio::task::spawn_blocking(|| {
+        discover_services("flying-transfer", Duration::from_secs(3))
+    });
     let collab_handle =
         tokio::task::spawn_blocking(|| discover_services("flying-collab", Duration::from_secs(3)));
 

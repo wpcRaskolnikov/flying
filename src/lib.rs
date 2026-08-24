@@ -53,6 +53,10 @@ impl ConnectionMode {
     }
 }
 
+pub fn generate_password() -> String {
+    petname::petname(3, "-").unwrap_or_else(|| "flying-transfer-secret".to_string())
+}
+
 pub fn create_listener(port: u16) -> anyhow::Result<TcpListener> {
     let addr = format!("[::]:{}", port).parse::<SocketAddr>()?;
 

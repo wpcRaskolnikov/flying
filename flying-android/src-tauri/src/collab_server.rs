@@ -1,7 +1,6 @@
 use crate::utils::{CollabServerState, RoomManager};
 
-use flying::mdns::advertise_collab_service;
-use flying::utils::create_listener;
+use flying::create_listener;
 
 use std::sync::Arc;
 
@@ -73,9 +72,6 @@ pub async fn start_collab_server(
 
     let listener =
         create_listener(port).map_err(|e| format!("Failed to create listener: {}", e))?;
-    let mdns = advertise_collab_service(port)
-        .map_err(|e| format!("Failed to start mDNS broadcast: {}", e))?;
-    *state.mdns_daemon.lock().unwrap() = Some(mdns);
 
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     *state.abort_handle.lock().unwrap() = Some(shutdown_tx);
@@ -105,20 +101,10 @@ pub async fn start_collab_server(
 
 #[tauri::command]
 pub async fn stop_collab_server(state: tauri::State<'_, CollabServerState>) -> Result<(), String> {
-    if let Some(daemon) = state.mdns_daemon.lock().unwrap().take() {
-        let _ = daemon.shutdown();
-    }
     if let Some(abort_sender) = state.abort_handle.lock().unwrap().take() {
         let _ = abort_sender.send(());
         Ok(())
     } else {
         return Err("No server is running".to_string());
     }
-}
-
-#[tauri::command]
-pub async fn is_collab_server_running(
-    state: tauri::State<'_, CollabServerState>,
-) -> Result<bool, String> {
-    Ok(state.abort_handle.lock().unwrap().is_some())
 }

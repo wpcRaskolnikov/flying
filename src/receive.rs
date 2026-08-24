@@ -103,7 +103,9 @@ pub async fn receive<S: NetworkStream>(
     output_dir: &Path,
     progress_tx: Option<Sender<u8>>,
 ) -> anyhow::Result<()> {
-    let meta = Metadata::read(session).await?;
+    let Some(meta) = Metadata::read(session).await? else {
+        anyhow::bail!("No metadata received");
+    };
     match meta.transfer_type {
         Type::Folder => {
             let folder_path = output_dir.join(&meta.relative_path);
@@ -142,19 +144,6 @@ pub async fn receive_folder<S: NetworkStream>(
     folder_path: &Path,
     progress_tx: Option<Sender<u8>>,
 ) -> anyhow::Result<()> {
-    async fn read_relative_path<S: NetworkStream>(
-        session: &mut Session<S>,
-    ) -> anyhow::Result<Option<String>> {
-        let path_len = session.read_u64().await? as usize;
-        if path_len == 0 {
-            return Ok(None);
-        }
-
-        let mut path_bytes = vec![0; path_len];
-        session.read_exact(&mut path_bytes).await?;
-        Ok(Some(String::from_utf8_lossy(&path_bytes).to_string()))
-    }
-
     println!(
         "Creating folder: {}",
         folder_path
@@ -162,14 +151,19 @@ pub async fn receive_folder<S: NetworkStream>(
             .unwrap_or_default()
             .to_string_lossy()
     );
-    if !folder_path.exists() {
-        fs::create_dir_all(&folder_path).await?;
-    }
+    fs::create_dir_all(&folder_path).await?;
 
-    while let Some(relative_path) = read_relative_path(session).await? {
-        let file_size = session.read_u64().await?;
-        let file_path = folder_path.join(&relative_path);
-        receive_file(session, &file_path, file_size, progress_tx.clone()).await?;
+    while let Some(meta) = Metadata::read(session).await? {
+        let full_path = folder_path.join(&meta.relative_path);
+
+        match meta.transfer_type {
+            Type::Folder => {
+                fs::create_dir_all(&full_path).await?;
+            }
+            Type::File => {
+                receive_file(session, &full_path, meta.size, progress_tx.clone()).await?;
+            }
+        }
     }
 
     Ok(())
