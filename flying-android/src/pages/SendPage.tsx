@@ -28,7 +28,7 @@ import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { useAtomValue } from "jotai";
 import { portAtom } from "../store";
 import { useSnackbar, useInputHistory } from "../hooks";
-import type { ConnectionConfig, TransferStatusPayload, PickedEntity } from "../types";
+import type { ConnectionConfig, TransferStatus, PickedEntity } from "../types";
 
 function SendPage() {
   const [selectedFile, setSelectedFile] = useState<string>("");
@@ -52,15 +52,15 @@ function SendPage() {
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    const unlisten = listen<TransferStatusPayload>(
+    const unlisten = listen<TransferStatus>(
       "send-status-update",
       (event) => {
-        const { status, data, peerId } = event.payload;
+        const { status, data } = event.payload;
 
         switch (status) {
           case "ready":
-            if (peerId && configModeRef.current === "relay_listen") {
-              setConfig((prev) => ({ ...prev, peerId }));
+            if (data && configModeRef.current === "relay_listen") {
+              setConfig((prev) => ({ ...prev, peerId: data }));
             }
             setIsSending(true);
             setStatus("Waiting for connection...");

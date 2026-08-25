@@ -3,13 +3,11 @@ export type PickedEntity = {
   name: string;
 };
 
-export type TransferStatus = "ready" | "processing" | "completed" | "error";
-
-export type TransferStatusPayload = {
-  status: TransferStatus;
-  data: number | string | { peerId?: string } | null;
-  peerId?: string;
-};
+export type TransferStatus =
+  | { status: "ready"; data: string }
+  | { status: "processing"; data: number }
+  | { status: "completed"; data: null }
+  | { status: "error"; data: string };
 
 type ConnectConfig = {
   mode: "connect";

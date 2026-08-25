@@ -27,7 +27,7 @@ import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { useAtomValue } from "jotai";
 import { portAtom } from "../store";
 import { useSnackbar, useInputHistory } from "../hooks";
-import type { ConnectionConfig, TransferStatusPayload, PickedEntity } from "../types";
+import type { ConnectionConfig, TransferStatus, PickedEntity } from "../types";
 
 function ReceivePage() {
   const [outputDirUri, setOutputDirUri] = useState<string>("");
@@ -63,15 +63,15 @@ function ReceivePage() {
   useEffect(() => {
     loadDefaultFolder();
 
-    const unlisten = listen<TransferStatusPayload>(
+    const unlisten = listen<TransferStatus>(
       "receive-status-update",
       (event) => {
-        const { status, data, peerId } = event.payload;
+        const { status, data } = event.payload;
 
         switch (status) {
           case "ready":
-            if (peerId && configModeRef.current === "relay_listen") {
-              setConfig((prev) => ({ ...prev, peerId }));
+            if (data && configModeRef.current === "relay_listen") {
+              setConfig((prev) => ({ ...prev, peerId: data }));
             }
             setIsReceiving(true);
             setStatus("Waiting for connection...");

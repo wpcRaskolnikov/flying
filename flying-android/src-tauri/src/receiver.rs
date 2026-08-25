@@ -1,5 +1,5 @@
 use crate::ConnectionConfig;
-use crate::utils::{ReceiveState, TransferStatus, TransferStatusPayload};
+use crate::utils::{ReceiveState, TransferStatus};
 
 use flying::establish_connection;
 use flying::receive::run_receiver;
@@ -47,22 +47,16 @@ pub async fn receive_file(
             output_dir = PathBuf::from(output_dir_uri);
         }
 
-        let emit = |payload: TransferStatusPayload| {
-            let _ = window.emit("receive-status-update", payload);
+        let emit = |status: TransferStatus| {
+            let _ = window.emit("receive-status-update", status);
         };
 
-        emit(TransferStatusPayload {
-            status: TransferStatus::Ready,
-            peer_id: None,
-        });
+        emit(TransferStatus::Ready(String::new()));
 
         let stream = match establish_connection(&mode, port, Some(peer_id_tx)).await {
             Ok(s) => s,
             Err(e) => {
-                emit(TransferStatusPayload {
-                    status: TransferStatus::Error(format!("Connection failed: {e}")),
-                    peer_id: None,
-                });
+                emit(TransferStatus::Error(format!("Connection failed: {e}")));
                 *state_handle.lock().unwrap() = None;
                 return;
             }
@@ -74,35 +68,20 @@ pub async fn receive_file(
         loop {
             tokio::select! {
                 Some(percent) = progress_rx.recv() => {
-                    emit(TransferStatusPayload {
-                        status: TransferStatus::Processing(percent),
-                        peer_id: None,
-                    });
+                    emit(TransferStatus::Processing(percent));
                 }
                 Some(peer_id) = peer_id_rx.recv() => {
-                    emit(TransferStatusPayload {
-                        status: TransferStatus::Ready,
-                        peer_id: Some(peer_id),
-                    });
+                    emit(TransferStatus::Ready(peer_id));
                 }
                 res = &mut transfer_fut => {
                     match res {
-                        Ok(_) => emit(TransferStatusPayload {
-                            status: TransferStatus::Completed,
-                            peer_id: None,
-                        }),
-                        Err(e) => emit(TransferStatusPayload {
-                            status: TransferStatus::Error(format!("Receive error: {e}")),
-                            peer_id: None,
-                        }),
+                        Ok(_) => emit(TransferStatus::Completed),
+                        Err(e) => emit(TransferStatus::Error(format!("Receive error: {e}"))),
                     }
                     break;
                 }
                 _ = &mut abort_registration => {
-                    emit(TransferStatusPayload {
-                        status: TransferStatus::Error("Transfer cancelled".to_string()),
-                        peer_id: None,
-                    });
+                    emit(TransferStatus::Error("Transfer cancelled".to_string()));
                     break;
                 }
             }

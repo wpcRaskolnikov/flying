@@ -32,17 +32,10 @@ const ROOM_BUFFER: usize = 64;
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase", tag = "status", content = "data")]
 pub enum TransferStatus {
-    Ready,
+    Ready(String), //peer_id
     Processing(u8),
     Completed,
     Error(String),
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TransferStatusPayload {
-    pub status: TransferStatus,
-    pub peer_id: Option<String>,
 }
 
 pub struct RoomManager {
