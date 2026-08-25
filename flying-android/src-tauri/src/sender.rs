@@ -17,7 +17,7 @@ use {
     flying::session::{Role, Session},
     tauri_plugin_android_fs::{AndroidFsExt, Entry, FileUri},
     tokio::fs::File as TokioFile,
-    tokio::io::{AsyncReadExt, AsyncWriteExt},
+    tokio::io::AsyncWriteExt,
 };
 
 #[tauri::command]
@@ -67,15 +67,13 @@ pub async fn send_file(
         let transfer_fut: std::pin::Pin<
             Box<dyn std::future::Future<Output = Result<(), String>> + Send>,
         > = {
-            let android_uri: Option<FileUri> = FileUri::from_json_str(&file_uri).ok();
-            match android_uri {
-                Some(ref uri) => Box::pin(async {
-                    run_send_android(&_app, uri, &password, Some(progress_tx), stream)
-                        .await
-                        .map_err(|e| format!("Send error: {e}"))
-                }),
-                None => Box::pin(async { Err("Failed to parse URI".to_string()) }),
-            }
+            let uri = FileUri::from_json_str(&file_uri)
+                .map_err(|_| "Failed to parse URI".to_string())?;
+            Box::pin(async move {
+                run_send_android(&_app, &uri, &password, Some(progress_tx), stream)
+                    .await
+                    .map_err(|e| format!("Send error: {e}"))
+            })
         };
 
         #[cfg(not(target_os = "android"))]
@@ -163,7 +161,7 @@ async fn send_file_android(
     };
     Metadata {
         relative_path,
-        transfer_type: metadata::Type::File,
+        transfer_type: flying::metadata::Type::File,
         size: file_size,
     }
     .write(session)
@@ -171,7 +169,7 @@ async fn send_file_android(
 
     let mut tokio_file = TokioFile::from_std(source_file);
     let mut progress = Progress::new(file_size, progress_tx);
-    flying::send::encrypt_and_send(session, &mut tokio_file, &mut progress).await?;
+    flying::send::encrypt_and_send(session, tokio_file, &mut progress).await?;
 
     Ok(())
 }

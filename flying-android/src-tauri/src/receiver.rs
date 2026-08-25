@@ -40,6 +40,7 @@ pub async fn receive_file(
         let output_dir;
         #[cfg(target_os = "android")]
         {
+            _ = output_dir_uri;
             output_dir = PathBuf::from("/storage/emulated/0/Download");
         }
         #[cfg(not(target_os = "android"))]
