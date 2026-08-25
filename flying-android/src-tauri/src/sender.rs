@@ -67,8 +67,7 @@ pub async fn send_file(
         let transfer_fut: std::pin::Pin<
             Box<dyn std::future::Future<Output = Result<(), String>> + Send>,
         > = {
-            let uri = FileUri::from_json_str(&file_uri)
-                .map_err(|_| "Failed to parse URI".to_string())?;
+            let uri = FileUri::from_json_str(&file_uri).expect("Failed to parse URI");
             Box::pin(async move {
                 run_send_android(&_app, &uri, &password, Some(progress_tx), stream)
                     .await
@@ -167,7 +166,7 @@ async fn send_file_android(
     .write(session)
     .await?;
 
-    let mut tokio_file = TokioFile::from_std(source_file);
+    let tokio_file = TokioFile::from_std(source_file);
     let mut progress = Progress::new(file_size, progress_tx);
     flying::send::encrypt_and_send(session, tokio_file, &mut progress).await?;
 
