@@ -1,5 +1,5 @@
 use crate::ConnectionConfig;
-use crate::utils::{SendState, TransferStatus};
+use crate::{TransferStatus, SendState};
 
 use flying::establish_connection;
 

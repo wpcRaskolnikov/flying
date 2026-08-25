@@ -2,7 +2,6 @@ import { useState, useEffect } from "react";
 import { yCollab } from "y-codemirror.next";
 import * as Y from "yjs";
 import { WebsocketProvider } from "y-websocket";
-import { python } from "@codemirror/lang-python";
 import { useSnackbar } from "./useSnackbar";
 
 export interface Peer {
@@ -117,6 +116,6 @@ export function useYjsCollab(session: SessionConfig | null) {
   return {
     peers,
     status,
-    extensions: collabExt ? [python(), collabExt] : [],
+    extensions: collabExt ? [collabExt] : [],
   };
 }

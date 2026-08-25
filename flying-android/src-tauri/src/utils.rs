@@ -1,5 +1,3 @@
-use serde::Serialize;
-
 #[cfg(not(target_os = "android"))]
 use tauri::Manager;
 use tauri_plugin_store::StoreExt;
@@ -11,7 +9,7 @@ use std::sync::{
 };
 
 use tokio::net::TcpStream;
-use tokio::sync::{broadcast, oneshot::Sender as OneshotSender};
+use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 
 use tokio_tungstenite::WebSocketStream;
@@ -29,20 +27,10 @@ use yrs::{Doc, Subscription, Update};
 
 const ROOM_BUFFER: usize = 64;
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase", tag = "status", content = "data")]
-pub enum TransferStatus {
-    Ready(String), //peer_id
-    Processing(u8),
-    Completed,
-    Error(String),
-}
-
 pub struct RoomManager {
     room_map: StdMutex<HashMap<String, Arc<Room>>>,
     next_client_id: AtomicU64,
 }
-
 impl Default for RoomManager {
     fn default() -> Self {
         Self {
@@ -51,7 +39,6 @@ impl Default for RoomManager {
         }
     }
 }
-
 impl RoomManager {
     pub fn get_or_create_room(&self, name: &str) -> Arc<Room> {
         let mut room_map = self.room_map.lock().unwrap();
@@ -76,7 +63,6 @@ pub struct Room {
     awareness: Arc<Awareness>,
     sender: broadcast::Sender<Vec<u8>>,
 }
-
 impl Room {
     pub fn new(doc: Doc, buffer_capacity: usize) -> Self {
         let (sender, _) = broadcast::channel(buffer_capacity);
@@ -190,22 +176,6 @@ impl Room {
             }
         })
     }
-}
-
-#[derive(Default, Clone)]
-pub struct SendState {
-    pub abort_handle: Arc<StdMutex<Option<OneshotSender<()>>>>,
-}
-
-#[derive(Default, Clone)]
-pub struct ReceiveState {
-    pub abort_handle: Arc<StdMutex<Option<OneshotSender<()>>>>,
-}
-
-#[derive(Default)]
-pub struct CollabServerState {
-    pub room_manager: Arc<RoomManager>,
-    pub abort_handle: StdMutex<Option<OneshotSender<()>>>,
 }
 
 #[tauri::command]

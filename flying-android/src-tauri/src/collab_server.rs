@@ -1,4 +1,4 @@
-use crate::utils::{CollabServerState, RoomManager};
+use crate::{CollabServerState, utils::RoomManager};
 
 use flying::create_listener;
 

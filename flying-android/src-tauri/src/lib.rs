@@ -5,9 +5,34 @@ mod receiver;
 mod sender;
 mod utils;
 
-use utils::{CollabServerState, ReceiveState, SendState};
+use std::sync::{Arc, Mutex as StdMutex};
 
 use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase", tag = "status", content = "data")]
+pub enum TransferStatus {
+    Ready(String), //peer_id
+    Processing(u8),
+    Completed,
+    Error(String),
+}
+
+#[derive(Default, Clone)]
+pub struct SendState {
+    pub abort_handle: Arc<StdMutex<Option<tokio::sync::oneshot::Sender<()>>>>,
+}
+
+#[derive(Default, Clone)]
+pub struct ReceiveState {
+    pub abort_handle: Arc<StdMutex<Option<tokio::sync::oneshot::Sender<()>>>>,
+}
+
+#[derive(Default)]
+pub struct CollabServerState {
+    pub room_manager: Arc<utils::RoomManager>,
+    pub abort_handle: StdMutex<Option<tokio::sync::oneshot::Sender<()>>>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(
