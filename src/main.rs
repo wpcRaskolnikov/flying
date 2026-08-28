@@ -45,7 +45,7 @@ enum Commands {
         #[arg(long, value_name = "MULTIADDR", conflicts_with = "connect")]
         relay: Option<Multiaddr>,
         #[arg(long, value_name = "PEER_ID")]
-        remote_peer: Option<PeerId>,
+        peer: Option<PeerId>,
         #[arg(short, long, default_value = "3290")]
         port: u16,
         #[arg(short, long, default_value = ".")]
@@ -165,7 +165,7 @@ async fn main() -> anyhow::Result<()> {
             listen,
             connect,
             relay,
-            remote_peer,
+            peer,
             port,
             password,
             output,
@@ -175,12 +175,12 @@ async fn main() -> anyhow::Result<()> {
                 std::process::exit(1);
             }
 
-            if relay.is_some() && !listen && remote_peer.is_none() {
+            if relay.is_some() && !listen && peer.is_none() {
                 eprintln!("Error: --peer is required when using --relay without --listen");
                 std::process::exit(1);
             }
 
-            let connection_mode = ConnectionMode::from_params(listen, connect, relay, remote_peer);
+            let connection_mode = ConnectionMode::from_params(listen, connect, relay, peer);
             let password = get_or_prompt_password(&connection_mode, password);
             print_session_info("RECEIVE", &password, &connection_mode, Some(&output));
 

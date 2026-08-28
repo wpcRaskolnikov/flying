@@ -2,7 +2,7 @@ use crate::VERSION;
 use crate::metadata::{Metadata, Type};
 use crate::progress::Progress;
 use crate::session::{NetworkStream, Role, Session};
-use humansize::{BINARY, format_size};
+use bytesize::ByteSize;
 use ring::aead;
 use std::path::{Path, PathBuf};
 use tokio::{
@@ -128,7 +128,7 @@ pub async fn receive_file<S: NetworkStream>(
     println!(
         "Receiving: {} ({})",
         file_path.display(),
-        format_size(file_size, BINARY)
+        ByteSize(file_size).to_string()
     );
 
     let mut progress = Progress::new(file_size, progress_tx);

@@ -85,8 +85,8 @@ async fn connect_to_relay(
 
     loop {
         match swarm.select_next_some().await {
-            SwarmEvent::ConnectionEstablished { peer_id, .. } => {
-                println!("Connected to relay: {}", peer_id);
+            SwarmEvent::ConnectionEstablished { .. } => {
+                println!("Connected to relay!");
                 return Ok(());
             }
             SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {

@@ -7,6 +7,8 @@ use libp2p::{
 };
 use std::{error::Error, time::Duration};
 
+use bytesize::ByteSize;
+
 #[derive(Parser, Debug)]
 #[command(name = "flying-relay", version)]
 #[command(about = "Flying relay server for NAT traversal", long_about = None)]
@@ -15,6 +17,8 @@ struct Cli {
     port: u16,
     #[arg(long)]
     secret_key_seed: Option<u8>,
+    #[arg(long, value_name = "SIZE", default_value = "128K", help = "Maximum size per relay circuit (0 = unlimited). Supports B/K/M/G suffix, e.g. 128K, 1G")]
+    max_size: ByteSize,
 }
 
 #[derive(NetworkBehaviour)]
@@ -50,6 +54,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     println!("Flying Relay Server");
     println!("===========================================");
     println!("Relay PeerID: {}", local_peer_id);
+    println!("Max circuit size: {}", cli.max_size);
     println!("===========================================\n");
 
     let mut swarm = libp2p::SwarmBuilder::with_existing_identity(local_key)
@@ -61,7 +66,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
         )?
         .with_quic()
         .with_behaviour(|key| RelayBehaviour {
-            relay: relay::Behaviour::new(key.public().to_peer_id(), Default::default()),
+            relay: relay::Behaviour::new(
+                key.public().to_peer_id(),
+                relay::Config {
+                    max_circuit_bytes: cli.max_size.as_u64(),
+                    ..Default::default()
+                },
+            ),
             ping: ping::Behaviour::new(ping::Config::new()),
             identify: identify::Behaviour::new(identify::Config::new(
                 "/flying-relay/1.0.0".to_string(),

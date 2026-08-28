@@ -2,7 +2,7 @@ use crate::VERSION;
 use crate::metadata::{Metadata, Type};
 use crate::progress::Progress;
 use crate::session::{NetworkStream, Role, Session};
-use humansize::{BINARY, format_size};
+use bytesize::ByteSize;
 use ring::{aead, rand};
 use std::path::Path;
 use tokio::{
@@ -133,7 +133,7 @@ pub async fn send_file<S: NetworkStream>(
     println!(
         "Sending: {} ({})",
         meta.relative_path,
-        format_size(meta.size, BINARY)
+        ByteSize(meta.size).to_string()
     );
     meta.write(session).await?;
 
