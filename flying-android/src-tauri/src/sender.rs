@@ -1,5 +1,5 @@
-use crate::ConnectionConfig;
-use crate::{TransferStatus, SendState};
+use crate::utils::{ConnectionConfig, TransferStatus};
+use crate::SendState;
 
 use flying::establish_connection;
 
@@ -30,13 +30,13 @@ pub async fn cancel_send(state: tauri::State<'_, SendState>) -> Result<(), Strin
 
 #[tauri::command]
 pub async fn send_file(
+    state: tauri::State<'_, SendState>,
     file_uri: String,
     password: String,
     config: ConnectionConfig,
     port: u16,
     _app: tauri::AppHandle,
     window: tauri::Window,
-    state: tauri::State<'_, SendState>,
 ) -> Result<(), String> {
     let mode = config.to_flying_mode()?;
 
@@ -54,10 +54,22 @@ pub async fn send_file(
 
         emit(TransferStatus::Ready(String::new()));
 
-        let stream = match establish_connection(&mode, port, Some(peer_id_tx)).await {
-            Ok(s) => s,
-            Err(e) => {
-                emit(TransferStatus::Error(format!("Connection failed: {e}")));
+        let conn_fut = establish_connection(&mode, port, Some(peer_id_tx));
+        tokio::pin!(conn_fut);
+
+        let stream = tokio::select! {
+            result = &mut conn_fut => {
+                match result {
+                    Ok(s) => s,
+                    Err(e) => {
+                        emit(TransferStatus::Error(format!("Connection failed: {e}")));
+                        *state_handle.lock().unwrap() = None;
+                        return;
+                    }
+                }
+            }
+            _ = &mut abort_registration => {
+                emit(TransferStatus::Error("Transfer cancelled".to_string()));
                 *state_handle.lock().unwrap() = None;
                 return;
             }

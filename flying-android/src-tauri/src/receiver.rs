@@ -1,5 +1,5 @@
-use crate::ConnectionConfig;
-use crate::{TransferStatus, ReceiveState};
+use crate::utils::{ConnectionConfig, TransferStatus};
+use crate::ReceiveState;
 
 use flying::establish_connection;
 use flying::receive::run_receiver;
@@ -20,12 +20,12 @@ pub async fn cancel_receive(state: tauri::State<'_, ReceiveState>) -> Result<(),
 
 #[tauri::command]
 pub async fn receive_file(
+    state: tauri::State<'_, ReceiveState>,
     password: String,
     config: ConnectionConfig,
     output_dir_uri: String,
     port: u16,
     window: tauri::Window,
-    state: tauri::State<'_, ReceiveState>,
 ) -> Result<(), String> {
     let mode = config.to_flying_mode()?;
 
@@ -54,10 +54,22 @@ pub async fn receive_file(
 
         emit(TransferStatus::Ready(String::new()));
 
-        let stream = match establish_connection(&mode, port, Some(peer_id_tx)).await {
-            Ok(s) => s,
-            Err(e) => {
-                emit(TransferStatus::Error(format!("Connection failed: {e}")));
+        let conn_fut = establish_connection(&mode, port, Some(peer_id_tx));
+        tokio::pin!(conn_fut);
+
+        let stream = tokio::select! {
+            result = &mut conn_fut => {
+                match result {
+                    Ok(s) => s,
+                    Err(e) => {
+                        emit(TransferStatus::Error(format!("Connection failed: {e}")));
+                        *state_handle.lock().unwrap() = None;
+                        return;
+                    }
+                }
+            }
+            _ = &mut abort_registration => {
+                emit(TransferStatus::Error("Transfer cancelled".to_string()));
                 *state_handle.lock().unwrap() = None;
                 return;
             }

@@ -1,6 +1,7 @@
-use crate::{CollabServerState, utils::RoomManager};
+use crate::CollabServerState;
+use crate::room_manager::RoomManager;
 
-use flying::create_listener;
+use flying::{advertise_service, create_listener};
 
 use std::sync::Arc;
 
@@ -73,6 +74,9 @@ pub async fn start_collab_server(
     let listener =
         create_listener(port).map_err(|e| format!("Failed to create listener: {}", e))?;
 
+    let mdns = advertise_service("flying-collab", port)
+        .map_err(|e| format!("Failed to register mDNS service: {}", e))?;
+
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     *state.abort_handle.lock().unwrap() = Some(shutdown_tx);
 
@@ -80,11 +84,10 @@ pub async fn start_collab_server(
         info!("Collaboration server started on port {}", port);
         loop {
             tokio::select! {
-                result = listener.accept() => {
-                    match result {
+                res = listener.accept() => {
+                    match res {
                         Ok((socket, _addr)) => {
-                            let room_manager = Arc::clone(&room_manager);
-                            tokio::spawn(handle_connection(socket, room_manager));
+                            tokio::spawn(handle_connection(socket, Arc::clone(&room_manager)));
                         }
                         Err(e) => warn!("Failed to accept connection: {}", e),
                     }
@@ -95,6 +98,7 @@ pub async fn start_collab_server(
                 }
             }
         }
+        drop(mdns);
     });
     Ok(())
 }
@@ -103,8 +107,6 @@ pub async fn start_collab_server(
 pub async fn stop_collab_server(state: tauri::State<'_, CollabServerState>) -> Result<(), String> {
     if let Some(abort_sender) = state.abort_handle.lock().unwrap().take() {
         let _ = abort_sender.send(());
-        Ok(())
-    } else {
-        return Err("No server is running".to_string());
     }
+    Ok(())
 }
