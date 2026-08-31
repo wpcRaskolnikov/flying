@@ -26,7 +26,7 @@ This repository contains two versions:
 
 Flying now has a **graphical user interface (GUI)** version for both desktop and mobile users!
 
-Download the GUI app for your platform from the [releases page](https://github.com/wpcRaskolnikov/flying/releases):
+Download the GUI app(flying-android) for your platform from the [releases page](https://github.com/wpcRaskolnikov/flying/releases):
 - **Windows**: `.msi` or `.exe` installer
 - **macOS**: `.dmg` or `.app`
 - **Linux**: `.AppImage`, `.deb`, or `.rpm`
