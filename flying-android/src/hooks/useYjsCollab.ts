@@ -37,18 +37,20 @@ export type ConnectionStatus =
 export function useYjsCollab(session: SessionConfig | null) {
   const { showSnackbar } = useSnackbar();
 
+  const [text, setText] = useState<Y.Text | null>(null);
   const [peers, setPeers] = useState<Peer[]>([]);
   const [status, setStatus] = useState<ConnectionStatus>("idle");
   const [collabExt, setCollabExt] = useState<ReturnType<typeof yCollab> | null>(
     null,
   );
 
-  const serverUrl = session?.serverUrl ?? "";
-  const room = session?.room ?? "";
-  const name = session?.name ?? "";
-
   useEffect(() => {
+    const serverUrl = session?.serverUrl ?? "";
+    const room = session?.room ?? "";
+    const name = session?.name ?? "";
+
     setCollabExt(null);
+    setText(null);
     setPeers([]);
     setStatus(serverUrl && room && name ? "connecting" : "idle");
 
@@ -68,6 +70,7 @@ export function useYjsCollab(session: SessionConfig | null) {
 
     const ext = yCollab(ytext, provider.awareness, { undoManager });
     setCollabExt(ext);
+    setText(ytext);
 
     const updatePeers = () => {
       const states = provider.awareness.getStates();
@@ -111,11 +114,12 @@ export function useYjsCollab(session: SessionConfig | null) {
       undoManager.destroy();
       ydoc.destroy();
     };
-  }, [serverUrl, room, name, showSnackbar]);
+  }, [session, showSnackbar]);
 
   return {
     peers,
     status,
+    text,
     extensions: collabExt ? [collabExt] : [],
   };
 }

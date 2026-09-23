@@ -30,7 +30,9 @@ import {
   Person as PersonIcon,
   Delete as DeleteIcon,
 } from "@mui/icons-material";
-import CodeMirror from "@uiw/react-codemirror";
+import { useCodeMirror } from "@uiw/react-codemirror";
+import type { Extension } from "@codemirror/state";
+import type * as Y from "yjs";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { invoke } from "@tauri-apps/api/core";
 import { useSnackbar, useYjsCollab, useInputHistory } from "../hooks";
@@ -38,6 +40,25 @@ import type { SessionConfig } from "../hooks";
 import { predicates, objects } from "friendly-words";
 
 const DEFAULT_PORT = 18080;
+
+function CollabEditor({ text, extensions }: { text: Y.Text; extensions: Extension[] }) {
+  const { setContainer } = useCodeMirror({
+    extensions,
+    height: "100%",
+    theme: "light",
+    basicSetup: true,
+    initialState: {
+      get json() {
+        return {
+          doc: text.toString(),
+          selection: { ranges: [{ anchor: 0, head: 0 }], main: 0 },
+        };
+      },
+    },
+  });
+
+  return <div className="cm-theme-light" ref={setContainer} />;
+}
 
 function CollabEditPage() {
   const [isServerRunning, setIsServerRunning] = useState(false);
@@ -51,7 +72,7 @@ function CollabEditPage() {
   const { showSnackbar } = useSnackbar();
   const serverAddrHistory = useInputHistory("collab-serverAddr");
 
-  const { peers, status, extensions } = useYjsCollab(activeSession);
+  const { peers, status, text, extensions } = useYjsCollab(activeSession);
   const currentRoom = activeSession?.room ?? "";
   const inRoom = status === "connected";
 
@@ -333,13 +354,9 @@ function CollabEditPage() {
 
       {/* Editor */}
       <Box sx={{ flexGrow: 1, overflow: "visible" }}>
-        <CodeMirror
-          key={currentRoom}
-          extensions={extensions}
-          height="100%"
-          theme="light"
-          basicSetup
-        />
+        {text && (
+          <CollabEditor key={currentRoom} text={text} extensions={extensions} />
+        )}
       </Box>
     </Stack>
   );
